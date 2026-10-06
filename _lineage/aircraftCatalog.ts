@@ -1,6 +1,8 @@
 import { getFdmProfile } from "../jsbsim/fdmProfiles";
 import { SF50_VARIANTS } from "./sf50Variants";
 import { getEngineExhaustOpticalProfile } from "./engineExhaustProfiles";
+import { F135_ENGINE_GEOMETRY } from "./generated/f135EngineData";
+import { F135_ENGINE_GAS_SUPPORT, type EngineGasSupportDefinition } from "./engineGasSupport";
 import {
   AIRCRAFT_FAMILY_IDS,
   AIRCRAFT_IDS,
@@ -83,7 +85,7 @@ export interface AircraftSelection {
 export interface AircraftLodDefinition {
   id: AircraftLodMeshId;
   label: string;
-  /** Triangle count as reported by that airframe's validate_*.py. */
+  /** Total displayed triangles, including the selected installed engine export. */
   triangles: number;
   /** Path relative to the Vite base URL. */
   path: string;
@@ -100,13 +102,35 @@ export interface AircraftLodDefinition {
   optIn?: boolean;
 }
 
+export interface AircraftTemperatureObservation {
+  readonly property: string;
+  readonly unit: "K" | "degC" | "degF";
+  /** Native validity/initialization flags which must all be present and true. */
+  readonly availableWhen?: readonly string[];
+}
+
 export interface AircraftExhaustInstallation {
   id: string;
   engineIndex: number;
   opticalProfileId: string;
   attachmentNode: string;
+  /** One connected interior/exterior gas domain, following the actual rigid duct. */
+  gasSupport?: EngineGasSupportDefinition;
   /** Scope thermal glow to matching materials under this nozzle only. */
   hotSurfaceMaterialNames?: readonly string[];
+  /** Optional common hardware root when hot solids sit upstream of the exhaust attachment. */
+  hotSurfaceAttachmentNode?: string;
+  /** Native temperature observation used by the declared hardware's optical profile. */
+  hotSurfaceTemperature?: AircraftTemperatureObservation;
+  /** Independent native solid regions; array order is shared with the optical consumer. */
+  hotSurfaceRegions?: readonly {
+    materialNames: readonly string[];
+    temperature: AircraftTemperatureObservation;
+  }[];
+  /** Separate gas observation for the flame's temperature-indexed optical table. */
+  gasTemperature?: AircraftTemperatureObservation;
+  /** Upstream of augmentation; distinct from the mixed downstream gas bath. */
+  upstreamGasTemperature?: AircraftTemperatureObservation;
   /** Optional artistic aerosol appearance; independent of the optical plume. */
   smokeProfileId?: string;
   /** Position/direction in the authored attachment's local coordinates. */
@@ -116,10 +140,12 @@ export interface AircraftExhaustInstallation {
   closedRadiusMeters: number;
   openRadiusMeters: number;
   lengthMeters: number;
-  /** Native observation and scale for the optical table's power coordinate. */
+  /** Native operating observation used for plume extent and smoke emission. */
   powerProperty: string;
   powerFullScale: number;
   fuelFlowProperty: string;
+  /** Native burned augmentation fuel, kg/s; distinct from total supplied fuel. */
+  afterburnerBurnedFuelFlowProperty?: string;
 }
 
 export interface AircraftDefinition {
@@ -143,6 +169,16 @@ export interface AircraftDefinition {
   nozzlePositionEngineIndex?: number;
   /** Authored wheel/arm geometry hidden at native gear position zero; doors stay visible. */
   stowedGearNodeNames?: readonly string[];
+  /** Authored assembly roots retained in an isolated engine-test view; this may be only a nozzle. */
+  engineTestNodeNames?: readonly string[];
+  /** Generated from one source; full engine bytes are requested only by the stand. */
+  engineAssets?: {
+    full: { path: string; triangles: number };
+    installed: { path: string; triangles: number };
+    rig?: import("./engineNozzleRig").EngineNozzleRigDefinition;
+  };
+  /** Camera focus in aircraft body axes, measured in the authored rest pose including model offset. */
+  engineTestFocusOffset?: { x: number; y: number; z: number };
   exhaustSources?: readonly AircraftExhaustInstallation[];
   /** Engines whose native augmentation state lights the throttle indicator. */
   afterburner?: {
@@ -258,7 +294,10 @@ const C172_LODS: readonly AircraftLodDefinition[] = [
 
 // This is the F-35B's only exterior mesh, so Auto must be able to select it.
 const F35B_LODS: readonly AircraftLodDefinition[] = [
-  { id: "hd", label: "HD — source model", triangles: 12259, path: "aircraft/f-35b/F-35B_AF267.glb", autoFromMeters: 0, credit: F35B_CREDIT },
+  { id: "hd", label: "HD — reconstructed engine", triangles: F135_ENGINE_GEOMETRY.assets[2].triangles + F135_ENGINE_GEOMETRY.assets[1].triangles,
+    path: F135_ENGINE_GEOMETRY.assets[2].path, autoFromMeters: 0, credit: {
+      ...F35B_CREDIT, note: "Airframe from the author's Blender source (CC BY 4.0); original 0sfs engine reconstruction (AGPL-3.0-only).",
+    } },
 ];
 
 export const AIRCRAFT_CATALOG: readonly AircraftDefinition[] = [
@@ -294,6 +333,15 @@ export const AIRCRAFT_CATALOG: readonly AircraftDefinition[] = [
     cockpitOffset: { x: 0, y: 3.18098 + modelOffsetY("f-35b"), z: 6.30018 },
     cockpitMesh: true,
     nozzlePositionEngineIndex: 0,
+    engineTestNodeNames: ["F135_Engine"],
+    engineAssets: {
+      full: F135_ENGINE_GEOMETRY.assets[0], installed: F135_ENGINE_GEOMETRY.assets[1],
+      rig: { bearingNames: ["F135_Bearing1", "F135_Bearing2", "F135_Bearing3"],
+        bearingInclinationRad: F135_ENGINE_GEOMETRY.bearingTiltDegrees * Math.PI / 180,
+        apertureMechanism: F135_ENGINE_GEOMETRY.aperture },
+    },
+    // Whole-engine framing; both exports have identical authored placement.
+    engineTestFocusOffset: { x: 0, y: F135_ENGINE_GEOMETRY.attachment[1] + modelOffsetY("f-35b"), z: -1.66 },
     stowedGearNodeNames: [
       "leftGear", "leftPiston", "leftStrutT", "leftSuspension", "leftStrutB", "leftWheel",
       "rightGear", "rightPiston", "rightStrutT", "rightSuspension", "rightStrutB", "rightWheel",
@@ -305,13 +353,31 @@ export const AIRCRAFT_CATALOG: readonly AircraftDefinition[] = [
     },
     exhaustSources: [{
       id: "main-exhaust", engineIndex: 0, opticalProfileId: "f135-visible-approximation-v1",
-      attachmentNode: "vtol", exitPosition: [0, 0.28737974, 1.79], direction: [0, 0, 1],
-      hotSurfaceMaterialNames: ["darkmet2"],
+      attachmentNode: "F135_Exhaust", exitPosition: [0, 0, 0], direction: [0, 0, 1],
+      gasSupport: F135_ENGINE_GAS_SUPPORT,
+      hotSurfaceAttachmentNode: "F135_Engine",
+      hotSurfaceTemperature: { property: "propulsion/engine[0]/thermal/metal-temperature-k", unit: "K",
+        availableWhen: ["propulsion/engine[0]/thermal/initialized", "propulsion/engine[0]/thermal/valid"] },
+      hotSurfaceRegions: [
+        { materialNames: ["F135_CoreHot"], temperature: {
+          property: "propulsion/engine[0]/thermal/core/metal-temperature-k", unit: "K",
+          availableWhen: ["propulsion/engine[0]/thermal/core/initialized", "propulsion/engine[0]/thermal/valid"],
+        } },
+        { materialNames: ["F135_LinerHot"], temperature: {
+          property: "propulsion/engine[0]/thermal/metal-temperature-k", unit: "K",
+          availableWhen: ["propulsion/engine[0]/thermal/initialized", "propulsion/engine[0]/thermal/valid"],
+        } },
+      ],
+      gasTemperature: { property: "propulsion/engine[0]/thermal/nozzle-gas-temperature-k", unit: "K",
+        availableWhen: ["propulsion/engine[0]/thermal/valid"] },
+      upstreamGasTemperature: { property: "propulsion/engine[0]/egt-degc", unit: "degC",
+        availableWhen: ["propulsion/engine[0]/thermal/valid"] },
       smokeProfileId: "faint-aircraft-aerosol-v1",
-      // Radii measured from the authored petal tips; length is a visual approximation.
-      closedRadiusMeters: 0.402703, openRadiusMeters: 0.581769, lengthMeters: 6,
+      // Exit A9 visual geometry, not the separately authored throat A8 or native FADEC area.
+      closedRadiusMeters: F135_ENGINE_GEOMETRY.closedExitRadius, openRadiusMeters: F135_ENGINE_GEOMETRY.openExitRadius, lengthMeters: 6,
       powerProperty: "propulsion/engine[0]/n2", powerFullScale: 100,
       fuelFlowProperty: "propulsion/engine[0]/fuel-flow-rate-pps",
+      afterburnerBurnedFuelFlowProperty: "propulsion/engine[0]/thermal/afterburner-burned-fuel-flow-kg-sec",
     }],
     propellerBlades: 0,
     lods: F35B_LODS,
