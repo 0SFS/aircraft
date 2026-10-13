@@ -1,0 +1,32 @@
+import type { AircraftParameterId, AircraftParameters, AircraftParameterValues } from "./settings";
+import { isAircraftLodId, normalizeAircraftSelection, type AircraftSelection } from "./aircraftCatalog";
+import { isAircraftId } from "./aircraftIds";
+
+/** The osfs.aircraft.* parameters the aircraft chooser edits. */
+export const AIRCRAFT_SELECTION_PARAMETER_IDS: readonly AircraftParameterId[] = [
+  "osfs.aircraft.id",
+  "osfs.aircraft.generation",
+  "osfs.aircraft.lod",
+];
+
+/** The saved aircraft choice, kept consistent with the aircraft's package. */
+export function readAircraftSelection(parameters: AircraftParameters): AircraftSelection {
+  const aircraftId = parameters.get("osfs.aircraft.id");
+  const lodId = parameters.get("osfs.aircraft.lod");
+  // The registry accepts only the catalogue's choices; these checks narrow the type.
+  return normalizeAircraftSelection({
+    aircraftId: isAircraftId(aircraftId) ? aircraftId : "cessna-172",
+    generationId: parameters.get("osfs.aircraft.generation"),
+    lodId: isAircraftLodId(lodId) ? lodId : "auto",
+  });
+}
+
+/** A choice as parameter values, to write with `setMany`. */
+export function aircraftSelectionValues(selection: AircraftSelection): Partial<AircraftParameterValues> {
+  const normalized = normalizeAircraftSelection(selection);
+  return {
+    "osfs.aircraft.id": normalized.aircraftId,
+    ...(normalized.generationId !== undefined ? { "osfs.aircraft.generation": normalized.generationId } : {}),
+    "osfs.aircraft.lod": normalized.lodId,
+  };
+}

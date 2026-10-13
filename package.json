@@ -1,0 +1,94 @@
+{
+  "name": "@0sfs/aircraft",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Common aircraft code for 0SFS: the catalog and its loading, visual installation and animation, and the Aircraft panel.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "exports": {
+    "./aircraftAnimation": {
+      "source": "./src/aircraftAnimation.ts",
+      "default": "./src/aircraftAnimation.ts"
+    },
+    "./aircraftCatalog": {
+      "source": "./src/aircraftCatalog.ts",
+      "default": "./src/aircraftCatalog.ts"
+    },
+    "./aircraftForces": {
+      "source": "./src/aircraftForces.ts",
+      "default": "./src/aircraftForces.ts"
+    },
+    "./aircraftIds": {
+      "source": "./src/aircraftIds.ts",
+      "default": "./src/aircraftIds.ts"
+    },
+    "./AircraftSelectionPanel": {
+      "source": "./src/AircraftSelectionPanel.tsx",
+      "default": "./src/AircraftSelectionPanel.tsx"
+    },
+    "./aircraftSelectionSetting": {
+      "source": "./src/aircraftSelectionSetting.ts",
+      "default": "./src/aircraftSelectionSetting.ts"
+    },
+    "./createAircraftEngineVisuals": {
+      "source": "./src/createAircraftEngineVisuals.ts",
+      "default": "./src/createAircraftEngineVisuals.ts"
+    },
+    "./createAircraftLights": {
+      "source": "./src/createAircraftLights.ts",
+      "default": "./src/createAircraftLights.ts"
+    },
+    "./createAircraftModel": {
+      "source": "./src/createAircraftModel.ts",
+      "default": "./src/createAircraftModel.ts"
+    },
+    "./createPlaceholderAircraft": {
+      "source": "./src/createPlaceholderAircraft.ts",
+      "default": "./src/createPlaceholderAircraft.ts"
+    },
+    "./settings": {
+      "source": "./src/settings.ts",
+      "default": "./src/settings.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "@0sfs/engines": "0.1.0",
+    "@0sfs/exhaust": "0.1.0",
+    "@babylonjs/core": "8.56.2",
+    "@babylonjs/loaders": "8.56.2",
+    "@felipegalind0/jsbsim": "1.2.4-fork.21",
+    "foss-earth": "0.1.0",
+    "lucide-react": "1.41.0",
+    "react": "19.2.6"
+  },
+  "peerDependenciesMeta": {
+    "@0sfs/engines": {
+      "optional": true
+    },
+    "@0sfs/exhaust": {
+      "optional": true
+    },
+    "@babylonjs/core": {
+      "optional": true
+    },
+    "@babylonjs/loaders": {
+      "optional": true
+    },
+    "@felipegalind0/jsbsim": {
+      "optional": true
+    },
+    "foss-earth": {
+      "optional": true
+    },
+    "lucide-react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "vitest": "4.1.6"
+  }
+}
