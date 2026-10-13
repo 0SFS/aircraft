@@ -1,14 +1,18 @@
 import "@babylonjs/loaders/glTF";
 
 import {
+  Constants,
   LoadAssetContainerAsync,
   Quaternion,
+  RenderTargetTexture,
+  Texture,
   TransformNode,
   type AbstractMesh,
   type AssetContainer,
   type ISceneLoaderProgressEvent,
   type Scene,
 } from "@babylonjs/core";
+import { hiddenDepthOccludersReady, unwatchHiddenDepthOccluder, warmHiddenDepthOccluders, watchHiddenDepthOccluder } from "@0sfs/exhaust/engineExhaustDepth";
 import { whenMeshesReady } from "foss-earth/runtime";
 import { bindAircraftRig, disposeAircraftRig, type AircraftRig } from "./aircraftAnimation";
 import {
@@ -82,6 +86,14 @@ export interface AircraftModelHandle {
   setRenderStowedGear(enabled: boolean): void;
   /** Cache physical travel, including during loading. Unknown observations preserve the last state. */
   updateGearVisibility(actualGearDownNorm: number, withinScheduledFrame?: boolean): void;
+  /**
+   * Compile color and depth pipelines for fully stowed wheels and struts.
+   * They are hidden before the first frame, so the first extend would otherwise
+   * compile those pipelines on the gameplay frame.
+   */
+  warmHiddenGear(): void;
+  /** True when a fully stowed model has already warmed, or when nothing is stowed. */
+  hiddenGearPrepared(): boolean;
   dispose(): void;
 }
 
@@ -137,6 +149,9 @@ export function createAircraftModel(
   let disposed = false;
   let renderStowedGear = options.renderStowedGear ?? false;
   let actualGearDownNorm: number | null = null;
+  // Bumped when a light changes the material variant hidden gear was compiled with.
+  let gearWarmGeneration = 0;
+  let gearWarmedGeneration = -1;
   let state: AircraftModelState = {
     aircraftId: options.aircraftId,
     lodId: options.lodId,
@@ -153,6 +168,7 @@ export function createAircraftModel(
   };
 
   const disposeModel = (model: LoadedModel): void => {
+    for (const { mesh } of model.stowedGearMeshes) unwatchHiddenDepthOccluder(mesh);
     for (const container of model.containers) container.dispose();
     model.holder.dispose();
   };
@@ -184,6 +200,93 @@ export function createAircraftModel(
     }
     return changed;
   };
+
+  const expectsHiddenGear = (): boolean => !renderStowedGear && actualGearDownNorm === 0
+    && (getAircraftDefinition(state.aircraftId).stowedGearNodeNames?.length ?? 0) > 0;
+  const flagHiddenDepthWarmup = (mesh: AbstractMesh): void => { watchHiddenDepthOccluder(mesh); };
+  /**
+   * Draw hidden gear into a throwaway target that matches the canvas format so
+   * the WebGPU pipeline already exists when the meshes become visible. The
+   * target is discarded; the live frame never shows the gear.
+   */
+  const drawHiddenGearColor = (meshes: AbstractMesh[]): boolean => {
+    const engine = scene.getEngine();
+    const camera = scene.activeCamera;
+    if (!engine.getRenderingCanvas() || !camera) return !engine.getRenderingCanvas();
+    const samples = "currentSampleCount" in engine ? (engine as { currentSampleCount: number }).currentSampleCount : 1;
+    const target = new RenderTargetTexture("stowed-gear-color-warmup", 16, scene, false, true,
+      Constants.TEXTURETYPE_UNSIGNED_BYTE, false, Texture.NEAREST_SAMPLINGMODE, true, true, false,
+      engine.isWebGPU ? Constants.TEXTUREFORMAT_BGRA : Constants.TEXTUREFORMAT_RGBA);
+    target.samples = Math.max(1, samples);
+    target.activeCamera = camera;
+    target.renderList = meshes;
+    const saved = meshes.map(mesh => ({ visible: mesh.isVisible, always: mesh.alwaysSelectAsActiveMesh }));
+    const previousPass = engine.currentRenderPassId;
+    try {
+      for (const mesh of meshes) {
+        mesh.isVisible = true;
+        mesh.alwaysSelectAsActiveMesh = true;
+      }
+      target.render(false);
+      return true;
+    } finally {
+      meshes.forEach((mesh, index) => {
+        mesh.isVisible = saved[index].visible;
+        mesh.alwaysSelectAsActiveMesh = saved[index].always;
+        mesh.computeWorldMatrix(true);
+      });
+      engine.currentRenderPassId = previousPass;
+      target.dispose();
+    }
+  };
+  let warmingGear = false;
+  const warmHiddenGear = (): void => {
+    if (warmingGear || disposed || !expectsHiddenGear() || !shown) return;
+    warmingGear = true;
+    try { warmHiddenGearBody(); }
+    finally { warmingGear = false; }
+  };
+  const warmHiddenGearBody = (): void => {
+    const model = shown;
+    if (!model) return;
+    const meshes = model.stowedGearMeshes
+      .filter(entry => entry.originalVisibility && !entry.mesh.isDisposed())
+      .map(entry => entry.mesh);
+    for (const mesh of meshes) flagHiddenDepthWarmup(mesh);
+    if (gearWarmedGeneration !== gearWarmGeneration) {
+      if (!meshes.length) gearWarmedGeneration = gearWarmGeneration;
+      else {
+        const hidden = meshes.filter(mesh => !mesh.isVisible);
+        if (!hidden.length) gearWarmedGeneration = gearWarmGeneration;
+        else if (hidden.every(mesh => mesh.isEnabled())) {
+          let ready = true;
+          for (const mesh of hidden) {
+            try { if (!mesh.isReady(true)) ready = false; }
+            catch { ready = false; }
+          }
+          if (ready) {
+            const generation = gearWarmGeneration;
+            let drew = false;
+            try { drew = drawHiddenGearColor(hidden); }
+            catch { drew = false; }
+            // A light added while this draw was running changed the variant again.
+            if (drew && generation === gearWarmGeneration) gearWarmedGeneration = generation;
+          }
+        }
+      }
+    }
+    warmHiddenDepthOccluders();
+  };
+  const hiddenGearPrepared = (): boolean => {
+    if (!expectsHiddenGear()) return true;
+    if (!shown) return false;
+    if (!shown.stowedGearMeshes.some(entry => entry.originalVisibility)) return true;
+    return gearWarmedGeneration === gearWarmGeneration && hiddenDepthOccludersReady();
+  };
+  const noteGearMaterialsDirty = (): void => { gearWarmGeneration += 1; };
+  const onLightAdded = scene.onNewLightAddedObservable.add(noteGearMaterialsDirty);
+  const onLightRemoved = scene.onLightRemovedObservable.add(noteGearMaterialsDirty);
+  const onBeforeRender = scene.onBeforeRenderObservable.add(() => { warmHiddenGear(); });
 
   const load = (key: string, lodId: AircraftLodMeshId, path: string, triangles: number, chosen: boolean): void => {
     const controller = new AbortController();
@@ -249,7 +352,11 @@ export function createAircraftModel(
           key, lodId, triangles, containers, holder, engineTestMeshes,
           stowedGearMeshes: meshes
             .filter(mesh => stowedGearNames.has(mesh.name) || stowedGearNames.has(mesh.name.replace(/_primitive\d+$/, "")))
-            .map(mesh => ({ mesh, originalVisibility: mesh.isVisible })),
+            .map(mesh => {
+              // Depth compilation finds these even if the color warmup has not run yet.
+              if (mesh.isVisible) flagHiddenDepthWarmup(mesh);
+              return { mesh, originalVisibility: mesh.isVisible };
+            }),
         };
         for (const node of roots) node.parent = holder;
         for (const container of containers) container.addAllToScene();
@@ -375,8 +482,13 @@ export function createAircraftModel(
       actualGearDownNorm = position;
       if (shown && applyGearVisibility(shown) && !withinScheduledFrame) requestRender();
     },
+    warmHiddenGear,
+    hiddenGearPrepared,
     dispose(): void {
       disposed = true;
+      scene.onNewLightAddedObservable.remove(onLightAdded);
+      scene.onLightRemovedObservable.remove(onLightRemoved);
+      scene.onBeforeRenderObservable.remove(onBeforeRender);
       cancelPending();
       clearShown();
       root.dispose();
