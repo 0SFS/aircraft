@@ -1,6 +1,6 @@
 import {
   Color3,
-  MeshBuilder,
+  CreateBox,
   Quaternion,
   Scene,
   StandardMaterial,
@@ -79,15 +79,15 @@ export function createPlaceholderAircraft(
   const root = new TransformNode("aircraft-visual", scene);
   root.parent = parent;
 
-  const fuselage = MeshBuilder.CreateBox("fuselage", { width: 1.2, height: 1.4, depth: 8 }, scene);
+  const fuselage = CreateBox("fuselage", { width: 1.2, height: 1.4, depth: 8 }, scene);
   fuselage.parent = root;
   fuselage.position = new Vector3(0, 0.7, 0);
 
-  const wing = MeshBuilder.CreateBox("wing", { width: 11, height: 0.15, depth: 1.8 }, scene);
+  const wing = CreateBox("wing", { width: 11, height: 0.15, depth: 1.8 }, scene);
   wing.parent = root;
   wing.position = new Vector3(0, 0.8, 0.2);
 
-  const tail = MeshBuilder.CreateBox("tail", { width: 0.15, height: 2.2, depth: 1.4 }, scene);
+  const tail = CreateBox("tail", { width: 0.15, height: 2.2, depth: 1.4 }, scene);
   tail.parent = root;
   tail.position = new Vector3(0, 1.8, -3.4);
 

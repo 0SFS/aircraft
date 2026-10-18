@@ -2,7 +2,7 @@ import {
   AbstractMesh,
   Color3,
   Mesh,
-  MeshBuilder,
+  CreateDisc,
   Quaternion,
   StandardMaterial,
   Texture,
@@ -364,7 +364,7 @@ function nodeRadius(node: TransformNode): number {
 function buildPropellerDisc(node: TransformNode, scene: Scene): Mesh {
   // The propeller turns about local Z, so a disc in the local XY plane — which
   // is how CreateDisc is oriented — already lies in the propeller's plane.
-  const disc = MeshBuilder.CreateDisc(
+  const disc = CreateDisc(
     "propeller-disc",
     { radius: propellerRadius(node), tessellation: 24, sideOrientation: Mesh.DOUBLESIDE },
     scene,
