@@ -1,3 +1,4 @@
+import { HelpTip } from "foss-earth/shell";
 import { Plane } from "lucide-react";
 import { useId, useState } from "react";
 import {
@@ -142,10 +143,9 @@ export function AircraftSelectionPanel({
       <section className="flight-panel__aircraft-controls" aria-labelledby={`${id}-selected-name`}>
         <div className="flight-panel__section-heading">
           <strong id={`${id}-selected-name`}>{family.label}</strong>
-          <details className="flight-panel__info-details">
-            <summary className="flight-panel__info-summary" aria-label="Show aircraft details">?</summary>
+          <HelpTip label="Show aircraft details">
             <div className="flight-panel__info-content">
-              <p className="flight-panel__hint" role="status">
+              <p className="flight-panel__hint">
                 {hasChanges
                   ? `Pending changes for ${definition.label}. ${isActiveAircraft ? "Apply to update model detail." : `Currently flying ${activeDefinition.label} until you apply.`}`
                   : `${definition.label} is active. No pending changes.`}
@@ -178,7 +178,7 @@ export function AircraftSelectionPanel({
               ) : null}
               {!isActiveAircraft ? <p className="flight-panel__hint">Applying reloads the simulation to activate the complete aircraft.</p> : null}
             </div>
-          </details>
+          </HelpTip>
         </div>
         {family.variantLabel && family.variants.length > 1 ? (
           <label className="flight-panel__field flight-panel__generation-field">
@@ -218,23 +218,33 @@ export function AircraftSelectionPanel({
             </select>
           </label>
         </fieldset>
-        <button
-          className="flight-panel__command"
-          type="button"
-          disabled={!hasChanges}
-          onClick={() => setApplyError(onApply(selection))}
-        >
-          {!isActiveAircraft ? `Apply & fly ${definition.label}` : hasChanges ? "Apply model settings" : "Aircraft active"}
-        </button>
-        {hasChanges ? (
+        {/* "[Apply] [Revert] Flying Cirrus Vision Jet G2 until you apply." */}
+        <div className="flight-panel__row flight-panel__aircraft-apply">
           <button
-            className="flight-panel__command flight-panel__command--secondary"
+            className="flight-panel__command"
             type="button"
-            onClick={() => updateSelection(activeSelection)}
+            disabled={!hasChanges}
+            aria-label={!isActiveAircraft ? `Apply & fly ${definition.label}` : hasChanges ? "Apply model settings" : "Aircraft active"}
+            onClick={() => setApplyError(onApply(selection))}
           >
-            Return to active aircraft settings
+            {hasChanges ? "Apply" : "Active"}
           </button>
-        ) : null}
+          {hasChanges ? (
+            <button
+              className="flight-panel__command flight-panel__command--secondary"
+              type="button"
+              aria-label="Revert: return to active aircraft settings"
+              onClick={() => updateSelection(activeSelection)}
+            >
+              Revert
+            </button>
+          ) : null}
+          {hasChanges ? (
+            <p className="flight-panel__hint" role="status">
+              {isActiveAircraft ? "Model detail pending." : `Flying ${activeDefinition.label} until you apply.`}
+            </p>
+          ) : null}
+        </div>
         {applyError ? <p className="flight-panel__hint is-error" role="alert">{applyError}</p> : null}
       </section>
     </div>
