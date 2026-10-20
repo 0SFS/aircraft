@@ -210,6 +210,7 @@ export const AIRCRAFT_PARAMETERS_5 = [
     kind: "number",
     step: 1,
     bounds: within(20, 120),
+    alwaysShowTrack: true,
     default: 1.05 * 180 / Math.PI,
     defaultReason: "1.05 rad, the original field of view of both flight cameras.",
     home: all(CAMERA),
