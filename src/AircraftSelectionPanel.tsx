@@ -1,6 +1,6 @@
 import { HelpTip } from "foss-earth/shell";
 import { Plane } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   AIRCRAFT_FAMILIES,
   getAircraftDefinition,
@@ -34,12 +34,17 @@ const MODEL_STATUS_LABEL: Record<AircraftModelStatus, string> = {
   error: "Load failed",
 };
 
+const SKIP_CONFIRMATION_KEY = "0sfs.aircraft-switch.skip-confirmation";
+
 interface AircraftSelectionPanelProps {
   snapshot: AircraftSelectionPanelSnapshot;
   selection: AircraftSelection;
   onSelectionChange(selection: AircraftSelection): void;
   onFamilyChange(familyId: AircraftFamilyId): void;
-  onApply(selection: AircraftSelection): string | null;
+  /** Resolves when the complete aircraft is ready, or returns its error report. */
+  onApply(selection: AircraftSelection): string | null | Promise<string | null>;
+  switching?: boolean;
+  onSwitchModeChange?(switchMode: boolean): void;
 }
 
 function ModelCredit({ credit, prefix = "" }: { credit: AircraftModelCredit; prefix?: string }) {
@@ -58,14 +63,8 @@ function FamilyThumbnail({ family }: { family: AircraftFamilyDefinition }) {
   return (
     <span className="flight-panel__aircraft-image">
       {path && !failed ? (
-        <img
-          src={`${import.meta.env.BASE_URL}${path}`}
-          alt=""
-          width="640"
-          height="400"
-          decoding="async"
-          onError={() => setFailed(true)}
-        />
+        <img src={`${import.meta.env.BASE_URL}${path}`} alt="" width="640" height="400"
+          decoding="async" onError={() => setFailed(true)} />
       ) : (
         <span className="flight-panel__aircraft-image-fallback">
           <Plane size={30} aria-hidden="true" />
@@ -76,85 +75,167 @@ function FamilyThumbnail({ family }: { family: AircraftFamilyDefinition }) {
   );
 }
 
-/** The gallery stages a complete choice; only Apply can change the live aircraft. */
+/** Native modal dialogs keep keyboard focus in the warning, above the aircraft window. */
+function AircraftDialog({ titleId, onDismiss, children }: {
+  titleId: string;
+  onDismiss(): void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+    dialog.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => { if (typeof dialog.close === "function" && dialog.open) dialog.close(); };
+  }, []);
+  return (
+    <dialog className="flight-panel__aircraft-dialog" ref={ref} aria-labelledby={titleId}
+      onKeyDown={event => event.stopPropagation()}
+      onCancel={event => { event.preventDefault(); onDismiss(); }}>
+      <div className="flight-panel__aircraft-dialog-content">{children}</div>
+    </dialog>
+  );
+}
+
+/** Editing the loaded aircraft and choosing its replacement are separate views. */
 export function AircraftSelectionPanel({
-  snapshot, selection, onSelectionChange, onFamilyChange, onApply,
+  snapshot, onSelectionChange, onFamilyChange, onApply,
+  switching = false, onSwitchModeChange,
 }: AircraftSelectionPanelProps) {
   const id = useId();
+  const [switchMode, setSwitchMode] = useState(false);
+  const [confirmation, setConfirmation] = useState<AircraftSelection | null>(null);
+  const [skipConfirmation, setSkipConfirmation] = useState(() => {
+    try { return localStorage.getItem(SKIP_CONFIRMATION_KEY) === "true"; }
+    catch { return false; }
+  });
+  const [dontShowAgain, setDontShowAgain] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
-  const definition = getAircraftDefinition(selection.aircraftId);
-  const family = getAircraftFamilyForAircraft(selection.aircraftId);
-  const activeDefinition = getAircraftDefinition(snapshot.aircraftId);
   const activeSelection = normalizeAircraftSelection(snapshot);
-  const activeVariant = family.variants.find((variant) => variant.id === selection.generationId)
-    ?? family.variants.find((variant) => variant.aircraftId === selection.aircraftId)
+  const activeDefinition = getAircraftDefinition(snapshot.aircraftId);
+  const family = getAircraftFamilyForAircraft(snapshot.aircraftId);
+  // Every edit applies immediately; snapshots also reflect presets and generic settings.
+  const editingSelection = activeSelection;
+  const definition = activeDefinition;
+  const activeVariant = family.variants.find(variant => variant.id === editingSelection.generationId)
+    ?? family.variants.find(variant => variant.aircraftId === editingSelection.aircraftId)
     ?? family.variants[0];
-  const isActiveAircraft = selection.aircraftId === snapshot.aircraftId;
-  const hasChanges = !isActiveAircraft
-    || selection.lodId !== activeSelection.lodId
-    || selection.generationId !== activeSelection.generationId;
-  // Every level is offered, the opt-in ones too: choosing one is the opt-in.
-  // Their credit and licence show with the others below, since they are offered.
   const offered = definition.lods;
-  const currentModelLod = activeDefinition.lods.find(lod => lod.id === snapshot.modelActiveLodId);
-  const activeLod = isActiveAircraft ? currentModelLod : undefined;
+  const activeLod = activeDefinition.lods.find(lod => lod.id === snapshot.modelActiveLodId);
   const credited = [...offered, ...(activeLod ? [activeLod] : [])].reduce<AircraftModelCredit[]>((keep, lod) => {
     if (!keep.some(credit => credit.artist === lod.credit.artist
-      && credit.sourceUrl === lod.credit.sourceUrl && credit.licence === lod.credit.licence)) {
-      keep.push(lod.credit);
-    }
+      && credit.sourceUrl === lod.credit.sourceUrl && credit.licence === lod.credit.licence)) keep.push(lod.credit);
     return keep;
   }, []);
+  const busy = switching || applying;
 
-  const updateSelection = (next: AircraftSelection) => {
+  const changeMode = (next: boolean) => {
+    setSwitchMode(next);
+    onSwitchModeChange?.(next);
+  };
+  const restoreActiveSelection = () => {
+    onSelectionChange(activeSelection);
+    onFamilyChange(family.id);
+  };
+  const apply = async (next: AircraftSelection) => {
+    setConfirmation(null);
     setApplyError(null);
-    onSelectionChange(normalizeAircraftSelection(next));
+    setApplying(true);
+    changeMode(false);
+    onSelectionChange(next);
+    try {
+      const error = await onApply(next);
+      if (error) {
+        setApplyError(error);
+        restoreActiveSelection();
+      }
+    } catch (error) {
+      setApplyError(error instanceof Error ? (error.stack ?? error.message) : String(error));
+      restoreActiveSelection();
+    } finally {
+      setApplying(false);
+    }
+  };
+  const requestSwitch = (next: AircraftSelection) => {
+    if (busy) return;
+    const normalized = normalizeAircraftSelection(next);
+    if (skipConfirmation) void apply(normalized);
+    else {
+      setDontShowAgain(false);
+      setConfirmation(normalized);
+    }
+  };
+  const cancelConfirmation = () => {
+    setConfirmation(null);
+    restoreActiveSelection();
+  };
+  const updateModel = (next: AircraftSelection) => {
+    const normalized = normalizeAircraftSelection(next);
+    if (normalized.aircraftId !== snapshot.aircraftId) requestSwitch(normalized);
+    else void apply(normalized);
   };
 
   return (
-    <div className="flight-panel__aircraft-picker">
-      <fieldset className="flight-panel__fieldset">
-        <legend>Aircraft family</legend>
-        <div className="flight-panel__aircraft-gallery">
-          {AIRCRAFT_FAMILIES.map(entry => (
-            <label
-              key={entry.id}
-              className={`flight-panel__aircraft-card${entry.id === family.id ? " is-selected" : ""}`}
-            >
-              <input
-                type="radio"
-                name="flight-aircraft"
-                value={entry.id}
-                checked={entry.id === family.id}
-                aria-labelledby={`${id}-${entry.id}-name`}
-                onChange={() => { setApplyError(null); onFamilyChange(entry.id); }}
-                onFocus={event => event.currentTarget.closest("label")?.scrollIntoView({ block: "nearest", inline: "nearest" })}
-              />
-              <FamilyThumbnail family={entry} />
-              <span className="flight-panel__aircraft-card-caption">
-                <strong id={`${id}-${entry.id}-name`}>{entry.label}</strong>
-                <span aria-hidden="true">{entry.id === family.id ? "Selected" : "Select aircraft"}</span>
-              </span>
-            </label>
-          ))}
+    <div className="flight-panel__aircraft-picker" aria-busy={busy}>
+      {!switchMode ? (
+        <div className="flight-panel__aircraft-current">
+          <FamilyThumbnail key={family.id} family={family} />
+          <strong>{activeDefinition.label}</strong>
+          <button className="flight-panel__command" type="button" disabled={busy}
+            aria-label="Switch aircraft" aria-expanded={false} onClick={() => changeMode(true)}>
+            Switch
+          </button>
         </div>
-      </fieldset>
+      ) : null}
 
-      <section className="flight-panel__aircraft-controls" aria-labelledby={`${id}-selected-name`}>
-        <div className="flight-panel__section-heading">
-          <strong id={`${id}-selected-name`}>{family.label}</strong>
-          <HelpTip label="Show aircraft details">
-            <div className="flight-panel__info-content">
-              <p className="flight-panel__hint">
-                {hasChanges
-                  ? `Pending changes for ${definition.label}. ${isActiveAircraft ? "Apply to update model detail." : `Currently flying ${activeDefinition.label} until you apply.`}`
-                  : `${definition.label} is active. No pending changes.`}
-              </p>
-              <p className="flight-panel__hint">Selected generation: <strong>{activeVariant.label}</strong></p>
-              <p className="flight-panel__hint">Currently flying: <strong>{activeDefinition.label}</strong></p>
-              <p className="flight-panel__hint">{definition.summary}</p>
-              {family.developmentNote ? <p className="flight-panel__hint">{family.developmentNote}</p> : null}
-              {isActiveAircraft ? (
+      {switchMode ? (
+        <fieldset className="flight-panel__fieldset" disabled={busy}>
+          <legend>Choose an aircraft</legend>
+          <div className="flight-panel__aircraft-gallery">
+            {AIRCRAFT_FAMILIES.map(entry => entry.id === family.id ? (
+              <button key={entry.id} type="button" className="flight-panel__aircraft-card is-selected"
+                aria-label={`Edit ${activeDefinition.label}`} aria-current="true"
+                disabled={busy} onClick={() => changeMode(false)}>
+                <FamilyThumbnail family={entry} />
+                <span className="flight-panel__aircraft-card-caption">
+                  <strong>{activeDefinition.label}</strong>
+                  <span className="flight-panel__aircraft-card-footer">
+                    <span>Currently loaded</span>
+                    <span className="flight-panel__command">Edit</span>
+                  </span>
+                </span>
+              </button>
+            ) : (
+              <button key={entry.id} type="button" className="flight-panel__aircraft-card"
+                aria-label={`Switch to ${entry.label}`}
+                disabled={busy}
+                onClick={() => {
+                  onFamilyChange(entry.id);
+                  requestSwitch(normalizeAircraftSelection({
+                    aircraftId: entry.defaultAircraftId,
+                    lodId: activeSelection.lodId,
+                  }));
+                }}>
+                <FamilyThumbnail family={entry} />
+                <span className="flight-panel__aircraft-card-caption">
+                  <strong>{entry.label}</strong>
+                  <span aria-hidden="true">Switch</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </fieldset>
+      ) : (
+        <section className="flight-panel__aircraft-controls" aria-labelledby={`${id}-settings-name`}>
+          <div className="flight-panel__section-heading">
+            <strong id={`${id}-settings-name`}>Aircraft settings</strong>
+            <HelpTip label="Show aircraft details">
+              <div className="flight-panel__info-content">
+                <p className="flight-panel__hint">{activeDefinition.summary}</p>
+                {family.developmentNote ? <p className="flight-panel__hint">{family.developmentNote}</p> : null}
                 <div className="flight-panel__model-status" role="status" aria-label={`Current model for ${activeDefinition.label}`}>
                   <div className="flight-panel__metrics">
                     <div className="flight-panel__metric">
@@ -167,86 +248,73 @@ export function AircraftSelectionPanel({
                   {snapshot.lodId === "auto" && activeLod ? <p className="flight-panel__hint">Auto selected {activeLod.label}.</p> : null}
                   {snapshot.modelError ? <p className="flight-panel__hint is-error">{snapshot.modelError}</p> : null}
                 </div>
-              ) : <p className="flight-panel__hint">Model loading status will appear after this aircraft is activated.</p>}
-              {credited.map(credit => <ModelCredit key={`${credit.artist}-${credit.sourceUrl ?? ""}`} credit={credit} />)}
-              {offered.length === 0 ? (
-                <p className="flight-panel__hint">No mesh exists for this airframe yet, so the block placeholder is drawn instead.</p>
-              ) : null}
-              {family.thumbnail ? <ModelCredit credit={family.thumbnail.credit} prefix="Gallery image: " /> : null}
-              {!isActiveAircraft && currentModelLod?.credit.licence ? (
-                <ModelCredit credit={currentModelLod.credit} prefix={`Currently flying ${activeDefinition.label}: `} />
-              ) : null}
-              {!isActiveAircraft ? <p className="flight-panel__hint">Applying reloads the simulation to activate the complete aircraft.</p> : null}
-            </div>
-          </HelpTip>
-        </div>
-        {family.variantLabel && family.variants.length > 1 ? (
-          <label className="flight-panel__field flight-panel__generation-field">
-            <span>{family.variantLabel}</span>
-            <select
-              className="flight-panel__select"
-              value={activeVariant.id}
-              onChange={event => {
-                const variant = family.variants.find(entry => entry.id === event.target.value);
-                if (variant) updateSelection({
-                  ...selection,
-                  generationId: variant.id,
-                  aircraftId: variant.aircraftId,
-                });
-              }}
-              >
-              {family.variants.map(variant => (
-                <option key={variant.id} value={variant.id}>{variant.label}</option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-        <fieldset className="flight-panel__fieldset flight-panel__model-controls">
-          <legend>Model detail</legend>
-          <label className="flight-panel__field">
-            <span>Level of detail</span>
-            <select
-              className="flight-panel__select"
-              value={selection.lodId}
-              disabled={offered.length === 0}
-              onChange={event => updateSelection({ ...selection, lodId: event.target.value as AircraftLodId })}
-            >
-              <option value="auto">Auto (by chase distance)</option>
-              {offered.map(lod => (
-                <option key={lod.id} value={lod.id}>{`${lod.label} — ${lod.triangles.toLocaleString()} tris`}</option>
-              ))}
-            </select>
-          </label>
-        </fieldset>
-        {/* "[Apply] [Revert] Flying Cirrus Vision Jet G2 until you apply." */}
-        <div className="flight-panel__row flight-panel__aircraft-apply">
-          <button
-            className="flight-panel__command"
-            type="button"
-            disabled={!hasChanges}
-            aria-label={!isActiveAircraft ? `Apply & fly ${definition.label}` : hasChanges ? "Apply model settings" : "Aircraft active"}
-            onClick={() => setApplyError(onApply(selection))}
-          >
-            {hasChanges ? "Apply" : "Active"}
-          </button>
-          {hasChanges ? (
-            <button
-              className="flight-panel__command flight-panel__command--secondary"
-              type="button"
-              aria-label="Revert: return to active aircraft settings"
-              onClick={() => updateSelection(activeSelection)}
-            >
-              Revert
-            </button>
+                {credited.map(credit => <ModelCredit key={`${credit.artist}-${credit.sourceUrl ?? ""}`} credit={credit} />)}
+                {offered.length === 0 ? <p className="flight-panel__hint">No mesh exists for this airframe yet, so the block placeholder is drawn instead.</p> : null}
+                {family.thumbnail ? <ModelCredit credit={family.thumbnail.credit} prefix="Gallery image: " /> : null}
+              </div>
+            </HelpTip>
+          </div>
+          {family.variantLabel && family.variants.length > 1 ? (
+            <label className="flight-panel__field flight-panel__generation-field">
+              <span>{family.variantLabel}</span>
+              <select className="flight-panel__select" value={activeVariant.id} disabled={busy}
+                onChange={event => {
+                  const variant = family.variants.find(entry => entry.id === event.target.value);
+                  if (variant) updateModel({ ...editingSelection, generationId: variant.id, aircraftId: variant.aircraftId });
+                }}>
+                {family.variants.map(variant => <option key={variant.id} value={variant.id}>{variant.label}</option>)}
+              </select>
+            </label>
           ) : null}
-          {hasChanges ? (
-            <p className="flight-panel__hint" role="status">
-              {isActiveAircraft ? "Model detail pending." : `Flying ${activeDefinition.label} until you apply.`}
-            </p>
-          ) : null}
-        </div>
-        {applyError ? <p className="flight-panel__hint is-error" role="alert">{applyError}</p> : null}
-      </section>
+          <fieldset className="flight-panel__fieldset flight-panel__model-controls" disabled={busy}>
+            <legend>Model detail</legend>
+            <label className="flight-panel__field">
+              <span>Level of detail</span>
+              <select className="flight-panel__select" value={editingSelection.lodId}
+                disabled={busy || offered.length === 0}
+                onChange={event => updateModel({ ...editingSelection, lodId: event.target.value as AircraftLodId })}>
+                <option value="auto">Auto (by chase distance)</option>
+                {offered.map(lod => <option key={lod.id} value={lod.id}>{`${lod.label} — ${lod.triangles.toLocaleString()} tris`}</option>)}
+              </select>
+            </label>
+          </fieldset>
+        </section>
+      )}
+
+      {confirmation ? (
+        <AircraftDialog titleId={`${id}-confirm-title`} onDismiss={cancelConfirmation}>
+          <div className="flight-panel__aircraft-dialog-image">
+            <FamilyThumbnail family={getAircraftFamilyForAircraft(confirmation.aircraftId)} />
+          </div>
+          <h2 id={`${id}-confirm-title`}>Switch to {getAircraftDefinition(confirmation.aircraftId).label}?</h2>
+          <p>The current aircraft will be replaced. Your flight will stay paused until the new aircraft is ready.</p>
+          <label className="flight-panel__aircraft-confirm-preference">
+            <input type="checkbox" checked={dontShowAgain} onChange={event => setDontShowAgain(event.target.checked)} />
+            <span>Don’t show again</span>
+          </label>
+          <div className="flight-panel__aircraft-dialog-actions">
+            <button className="flight-panel__command flight-panel__command--secondary" type="button" autoFocus onClick={cancelConfirmation}>Cancel</button>
+            <button className="flight-panel__command" type="button" onClick={() => {
+              if (dontShowAgain) {
+                setSkipConfirmation(true);
+                try { localStorage.setItem(SKIP_CONFIRMATION_KEY, "true"); } catch { /* Keep the choice for this session. */ }
+              }
+              void apply(confirmation);
+            }}>Confirm</button>
+          </div>
+        </AircraftDialog>
+      ) : null}
+
+      {applyError ? (
+        <AircraftDialog titleId={`${id}-error-title`} onDismiss={() => setApplyError(null)}>
+          <h2 id={`${id}-error-title`}>Could not change aircraft</h2>
+          <p>The aircraft was not changed. Error report:</p>
+          <pre className="flight-panel__aircraft-error-report" tabIndex={0} aria-label="Aircraft change error report">{applyError}</pre>
+          <div className="flight-panel__aircraft-dialog-actions">
+            <button className="flight-panel__command" type="button" autoFocus onClick={() => setApplyError(null)}>Close</button>
+          </div>
+        </AircraftDialog>
+      ) : null}
     </div>
   );
 }

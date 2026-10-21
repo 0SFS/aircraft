@@ -1,47 +1,55 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { build } from "vite";
-import react from "@vitejs/plugin-react";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluate, openHeadlessChrome, waitForExpression } from "../../fly/scripts/headless-chrome.mjs";
 import { newOutputDirectory } from "../../fly/scripts/outputDirectory.mjs";
 
+// This is deliberately a static selector/layout check. The production-runtime
+// switch check separately proves that the FDM, model and retained world change.
 const root = fileURLToPath(new URL("../../fly/", import.meta.url));
+const requireFromApp = createRequire(new URL("../../fly/package.json", import.meta.url));
+const { build, defaultClientConditions } = await import(pathToFileURL(requireFromApp.resolve("vite")).href);
+const { default: react } = await import(pathToFileURL(requireFromApp.resolve("@vitejs/plugin-react")).href);
 const outArg = process.argv.slice(2).find(arg => arg.startsWith("--out="))?.slice(6);
-// Default: a new build/validation/aircraft-selection/<date_time>/.
 const out = outArg ? path.resolve(outArg) : newOutputDirectory("validation", "aircraft-selection");
-if (outArg) await mkdir(out); // Refuse to overwrite earlier acceptance evidence.
+if (outArg) await mkdir(out); // Keep every run's earlier evidence.
 const fixtureRoot = path.join(out, "fixture");
 const bundleRoot = path.join(out, "bundle");
 await mkdir(fixtureRoot);
 const importPath = relative => JSON.stringify(path.join(root, relative));
 const fixture = [
-  // The fleet registers with the aircraft catalog the panel reads.
   "import " + importPath("src/flight/aircraft/fleet.ts") + ";",
-  "import {createFlightControlPanel} from " + importPath("src/flight/hud/createFlightControlPanel.tsx") + ";",
-  "import {DEFAULT_GROUND_INTERACTION_SETTINGS,resolveGroundInteraction} from " + importPath("../ground-contact/src/groundInteractionSettings.ts") + ";",
-  // Every tab renders with the panel, the Ground one included, so the snapshot carries its state.
-  "const groundCapabilities={contactBridgeUnavailable:'not in this fixture',audioUnavailable:null};",
-  "const groundInteraction={settings:DEFAULT_GROUND_INTERACTION_SETTINGS,resolution:resolveGroundInteraction(DEFAULT_GROUND_INTERACTION_SETTINGS,groundCapabilities,DEFAULT_GROUND_INTERACTION_SETTINGS),capabilities:groundCapabilities,readOnlyReason:null,message:null,experimentOverride:null,hapticDevices:{gamepad:'none',phone:'Not paired'}};",
+  "import {AircraftSelectionPanel} from '@0sfs/aircraft/AircraftSelectionPanel';",
+  "import {normalizeAircraftSelection} from '@0sfs/aircraft/aircraftCatalog';",
+  "import {useState} from 'react';import {createRoot} from 'react-dom/client';",
   "import " + importPath("src/styles/globe.css") + ";",
   "import " + importPath("src/styles/flight.css") + ";",
-  "const noop=()=>{};",
-  "const snapshot={flightState:{latDeg:45,lonDeg:-93,altMeters:1500,headingRad:0,airspeedKts:150,throttleNorm:.5},fps:60,paused:true,viewMode:'third',runtimeStatus:{message:'Static UI acceptance fixture'},rendererMode:'webgl2',googleTerrainDetail:null,aircraftId:'cirrus-vision-jet',generationId:'g1',lodId:'auto',modelStatus:'ready',modelActiveLodId:'lod3',modelTriangles:1654,modelError:null,groundInteraction};",
-  "window.__aircraftFixture={applied:[],scope:'React aircraft controls and shell with a static snapshot; no FDM'};",
-  "const panel=createFlightControlPanel(document.getElementById('panel'),snapshot,{initialWeather:{windDirectionDeg:0,windSpeedKts:0},onLocationApply:noop,onWeatherChange:noop,onPausedChange:noop,onViewModeChange:noop,onAircraftApply:selection=>{window.__aircraftFixture.applied.push(selection);Object.assign(snapshot,selection);panel.update({...snapshot});return null;},onGoogleTerrainDetailChange:noop,onAutomaticGoogleTerrainDetailChange:noop,onFlightTerrainRequirementChange:noop,onTerrainDetailOverrideChange:noop,onTerrainDetailAnchorChange:noop,onKeyboardStickSettingsChange:noop,onOrbitInvertChange:noop,onArcadeGroundLaunchesChange:noop,onCollisionDebugChange:noop,onWheelSpinModeChange:noop,onTireSoundChange:noop,onGroundInteractionAction:noop});",
-  "const opening=setInterval(()=>{panel.openOrSelectTab('aircraft');if(document.querySelector('.flight-panel__aircraft-gallery'))clearInterval(opening);},25);setTimeout(()=>clearInterval(opening),2000);",
+  "localStorage.removeItem('0sfs.aircraft-switch.skip-confirmation');",
+  "const initial={aircraftId:'cirrus-vision-jet-g2',generationId:'g2',lodId:'auto',modelStatus:'ready',modelActiveLodId:'lod3',modelTriangles:1654,modelError:null};",
+  "window.__aircraftFixture={applied:[],finish:null,scope:'Real selector, fleet and CSS; static snapshots and controlled switch promise; no FDM or world'};",
+  "function Fixture(){const [snapshot,setSnapshot]=useState(initial),[selection,setSelection]=useState(normalizeAircraftSelection(initial)),[switching,setSwitching]=useState(false);",
+  "const apply=next=>{window.__aircraftFixture.applied.push(next);setSwitching(true);return new Promise(resolve=>{window.__aircraftFixture.finish=error=>{if(!error){setSnapshot(previous=>({...previous,...next}));}setSwitching(false);window.__aircraftFixture.finish=null;resolve(error??null);};});};",
+  "return <AircraftSelectionPanel snapshot={snapshot} selection={selection} onSelectionChange={setSelection} onFamilyChange={()=>{}} onApply={apply} switching={switching}/>;}",
+  "createRoot(document.getElementById('panel')).render(<Fixture/>);",
 ].join("\n");
 await writeFile(path.join(fixtureRoot, "entry.tsx"), fixture);
-await writeFile(path.join(fixtureRoot, "index.html"), '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aircraft UI acceptance fixture</title><style>html,body{margin:0}*{box-sizing:border-box}</style><div class="flight-app"><div id="panel"></div></div><script type="module" src="/entry.tsx"></script>');
+await writeFile(path.join(fixtureRoot, "index.html"), '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aircraft selector static acceptance fixture</title><style>html,body{margin:0;min-height:100%;background:#182631}*{box-sizing:border-box}.fixture-panel{position:fixed;top:16px;right:16px;width:480px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;border:1px solid #536371;border-radius:9px;background:#10191f;padding:12px;color:#e6edef;font:13px system-ui,sans-serif}</style><div class="flight-app"><div class="fixture-panel flight-panel__content" id="panel"></div></div><script type="module" src="/entry.tsx"></script>');
 await build({
   configFile: false, root: fixtureRoot, publicDir: false, base: "/",
   plugins: [react()], logLevel: "warn",
-  resolve: { alias: { react: path.join(root, "node_modules/react"), "react-dom": path.join(root, "node_modules/react-dom") }, dedupe: ["react", "react-dom"] },
+  resolve: {
+    preserveSymlinks: true,
+    conditions: ["source", ...defaultClientConditions],
+    alias: { react: path.join(root, "node_modules/react"), "react-dom": path.join(root, "node_modules/react-dom") },
+    dedupe: ["react", "react-dom", "foss-earth", "lucide-react", "@babylonjs/core", "@babylonjs/loaders", "3d-tiles-renderer"],
+  },
   build: { outDir: bundleRoot, emptyOutDir: false, minify: false },
 });
+
+const failures = [], network = [], browserErrors = [], results = [];
 const chrome = await openHeadlessChrome(path.join(out, "chrome-profile"));
-const failures = [], network = [], browserErrors = [];
 const mime = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
 const detach = chrome.onEvent(message => {
   if (message.method === "Runtime.exceptionThrown") browserErrors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
@@ -72,15 +80,10 @@ const detach = chrome.onEvent(message => {
     }
   })().catch(error => failures.push(error.message));
 });
-// Intersect focus bounds with each clipping ancestor as well as the viewport;
-// an offscreen control can still be programmatically clicked in Chromium.
-const focusGeometry = `(() => {const e=document.activeElement,r=e.getBoundingClientRect();let clip={top:0,left:0,right:innerWidth,bottom:innerHeight};for(let p=e.parentElement;p;p=p.parentElement){const s=getComputedStyle(p),b=p.getBoundingClientRect();if(/auto|scroll|hidden|clip/.test(s.overflowY)){clip.top=Math.max(clip.top,b.top+p.clientTop);clip.bottom=Math.min(clip.bottom,b.top+p.clientTop+p.clientHeight);}if(/auto|scroll|hidden|clip/.test(s.overflowX)){clip.left=Math.max(clip.left,b.left+p.clientLeft);clip.right=Math.min(clip.right,b.left+p.clientLeft+p.clientWidth);}}const s=getComputedStyle(e),outline=s.outlineStyle==='none'?0:parseFloat(s.outlineWidth)+parseFloat(s.outlineOffset);const contained=pad=>r.top-pad>=clip.top-1&&r.bottom+pad<=clip.bottom+1&&r.left-pad>=clip.left-1&&r.right+pad<=clip.right+1;return {tag:e.tagName,text:e.textContent?.trim(),visible:contained(0),outlineStyle:s.outlineStyle,outlineFullyVisible:contained(Math.max(0,outline)),clip,bounds:{top:r.top,bottom:r.bottom,left:r.left,right:r.right},isApply:e.matches('.flight-panel__aircraft-controls > button')};})()`;
-// Every dropdown is as wide as its own text, its longest option, and never
-// stretched to its row: its width as laid out is its natural width - measured
-// in place, with nothing that sizes it allowed to - or the room it has when
-// that is less.
-const dropdownGeometry = `(() => Array.from(document.querySelectorAll('.flight-panel__aircraft-controls select')).map(select => {const width=select.getBoundingClientRect().width,room=select.parentElement.getBoundingClientRect().width,saved=select.getAttribute('style');select.style.cssText+=';width:max-content;max-width:none;min-width:0;flex:none;justify-self:start;align-self:flex-start';const natural=select.getBoundingClientRect().width;if(saved===null)select.removeAttribute('style');else select.setAttribute('style',saved);return {label:select.closest('label')?.querySelector('span')?.textContent??select.getAttribute('aria-label')??'',options:Array.from(select.options,o=>o.value),natural,width,room,fitsText:Math.abs(width-Math.min(natural,room))<=1,stretched:width>natural+1};}))()`;
-const results = [];
+
+const dialogGeometry = `(() => {const dialog=document.querySelector('dialog[open]'),r=dialog.getBoundingClientRect();return {modal:dialog.matches(':modal'),fullscreen:Math.abs(r.left)<1&&Math.abs(r.top)<1&&Math.abs(r.width-innerWidth)<1&&Math.abs(r.height-innerHeight)<1,focusContained:dialog.contains(document.activeElement),contentFits:dialog.scrollWidth<=dialog.clientWidth&&dialog.scrollHeight<=dialog.clientHeight,buttons:Array.from(dialog.querySelectorAll('button'),button=>({text:button.textContent,height:button.getBoundingClientRect().height})),bounds:{x:r.x,y:r.y,width:r.width,height:r.height}};})()`;
+const currentGeometry = `(() => {const group=document.querySelector('.flight-panel__aircraft-current'),r=group.getBoundingClientRect(),s=getComputedStyle(group),image=group.querySelector('img'),button=group.querySelector('button');return {roundedEnclosure:parseFloat(s.borderRadius)>0&&parseFloat(s.borderTopWidth)>0&&s.borderTopStyle==='solid',childrenContained:Array.from(group.children).every(child=>{const c=child.getBoundingClientRect();return c.left>=r.left&&c.right<=r.right&&c.top>=r.top&&c.bottom<=r.bottom}),image:image?.getAttribute('src'),imageLoaded:!!image?.naturalWidth,genericIcon:!!group.querySelector('svg'),action:button.textContent.trim(),name:group.querySelector('strong').textContent};})()`;
+const noApply = `!Array.from(document.querySelectorAll('button')).some(button=>/Apply|reload/i.test(button.textContent))&&!/Changes pending|until you apply/i.test(document.body.innerText)`;
 try {
   for (const viewport of [
     { name: "wide", width: 1440, height: 900 },
@@ -95,54 +98,105 @@ try {
     await chrome.send("Emulation.setDeviceMetricsOverride", { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: false }, sessionId);
     await chrome.send("Page.navigate", { url: "https://0sfs.test/" }, sessionId);
     await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('.flight-panel__generation-field select'))");
-    await waitForExpression(chrome, sessionId, "Array.from(document.images).every(image=>image.complete && image.naturalWidth>0)");
+    await waitForExpression(chrome, sessionId, "Array.from(document.images).every(image=>image.complete&&image.naturalWidth>0)");
     const key = async (name, code) => {
       await chrome.send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name, windowsVirtualKeyCode: code, ...(name === "Enter" ? { text: "\r" } : {}) }, sessionId);
       await chrome.send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code: name, windowsVirtualKeyCode: code }, sessionId);
     };
-    await evaluate(chrome, sessionId, "document.querySelector('input[value=\"cirrus-vision-jet\"]').focus()");
-    await key("ArrowLeft", 37);
-    await waitForExpression(chrome, sessionId, "!document.querySelector('.flight-panel__generation-field')");
-    await key("ArrowRight", 39);
-    await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('.flight-panel__generation-field'))");
-    const dropdowns = await evaluate(chrome, sessionId, dropdownGeometry);
-    const tickboxes = await evaluate(chrome, sessionId, "document.querySelectorAll('.flight-panel__model-controls input[type=checkbox]').length");
-    const geometry = await evaluate(chrome, sessionId, "(() => {const gallery=document.querySelector('.flight-panel__aircraft-gallery'),controls=document.querySelector('.flight-panel__aircraft-controls'),focus=document.activeElement;const g=gallery.getBoundingClientRect(),c=controls.getBoundingClientRect(),f=focus.getBoundingClientRect();return {controlsOutsideGallery:!gallery.contains(controls),controlsBelowGallery:c.top>=g.bottom,documentFits:document.documentElement.scrollWidth<=innerWidth,focusVisible:f.top>=Math.max(0,g.top)&&f.bottom<=Math.min(innerHeight,g.bottom)&&f.left>=0&&f.right<=innerWidth,galleryHeight:g.height,galleryScrollHeight:gallery.scrollHeight,galleryClientHeight:gallery.clientHeight,overflowY:getComputedStyle(gallery).overflowY,focusedFamily:focus.value,focusOutline:getComputedStyle(focus.closest('label')).outlineStyle};})()");
-    await evaluate(chrome, sessionId, "(() => {const select=document.querySelector('.flight-panel__generation-field select');select.value='g2+';select.dispatchEvent(new Event('change',{bubbles:true}));})()");
-    await waitForExpression(chrome, sessionId, "document.querySelector('.flight-panel__generation-field select').value==='g2+'");
-    await evaluate(chrome, sessionId, "document.querySelector('.flight-panel__generation-field select').focus()");
-    await key("Tab", 9);
-    const controlFocus = await evaluate(chrome, sessionId, focusGeometry);
-    const screenshot = await chrome.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
-    await writeFile(path.join(out, viewport.name + ".png"), Buffer.from(screenshot.data, "base64"));
-    const appliedBefore = await evaluate(chrome, sessionId, "window.__aircraftFixture.applied.length");
-    let applyFocus;
-    for (let tabs = 0; tabs < 12; tabs++) {
-      await key("Tab", 9);
-      applyFocus = await evaluate(chrome, sessionId, focusGeometry);
-      if (applyFocus.isApply) break;
-    }
-    if (!applyFocus?.isApply) throw new Error("Keyboard navigation did not reach aircraft Apply.");
-    const applyScreenshot = await chrome.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
-    await writeFile(path.join(out, viewport.name + "-apply.png"), Buffer.from(applyScreenshot.data, "base64"));
+    const shot = async suffix => {
+      const screenshot = await chrome.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
+      const filename = viewport.name + "-" + suffix + ".png";
+      await writeFile(path.join(out, filename), Buffer.from(screenshot.data, "base64"));
+      return filename;
+    };
+    const clickText = async text => evaluate(chrome, sessionId, `Array.from(document.querySelectorAll('button')).find(button=>button.textContent===${JSON.stringify(text)}).click()`);
+    const openGallery = async () => {
+      await evaluate(chrome, sessionId, "document.querySelector('.flight-panel__aircraft-current button').focus()");
+      await key("Enter", 13);
+      await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('.flight-panel__aircraft-gallery'))");
+      await waitForExpression(chrome, sessionId, "Array.from(document.images).every(image=>image.complete&&image.naturalWidth>0)");
+    };
+    const choose = async name => {
+      await evaluate(chrome, sessionId, `(()=>{const button=document.querySelector('[aria-label="Switch to ${name}"]');button.scrollIntoView({block:'nearest'});button.focus();})()`);
+      await key("Enter", 13);
+    };
+
+    const initial = await evaluate(chrome, sessionId, `({...${currentGeometry},galleryHidden:!document.querySelector('.flight-panel__aircraft-gallery'),controlsVisible:!!document.querySelector('.flight-panel__aircraft-controls'),noApply:${noApply},fits:document.documentElement.scrollWidth<=innerWidth})`);
+    const screenshots = [await shot("edit")];
+    await openGallery();
+    const gallery = await evaluate(chrome, sessionId, "(()=>{const gallery=document.querySelector('.flight-panel__aircraft-gallery'),r=gallery.getBoundingClientRect(),current=gallery.querySelector('button.is-selected'),edit=current.querySelector('.flight-panel__command'),c=current.getBoundingClientRect(),e=edit.getBoundingClientRect();return {buttons:gallery.querySelectorAll('button').length,radios:gallery.querySelectorAll('input[type=radio]').length,settingsHidden:!document.querySelector('.flight-panel__aircraft-controls'),summaryHidden:!document.querySelector('.flight-panel__aircraft-current'),name:current.querySelector('strong').textContent,image:current.querySelector('img').getAttribute('src'),editText:edit.textContent.trim(),editLabel:current.getAttribute('aria-label'),editBottomRight:e.right<=c.right&&c.right-e.right<=10&&e.bottom<=c.bottom&&c.bottom-e.bottom<=10,nestedButtons:gallery.querySelectorAll('button button').length,scrollable:getComputedStyle(gallery).overflowY==='auto',fits:r.left>=0&&r.right<=innerWidth&&document.documentElement.scrollWidth<=innerWidth};})()");
+    screenshots.push(await shot("gallery"));
+    await evaluate(chrome, sessionId, "document.querySelector('button.flight-panel__aircraft-card.is-selected').focus()");
     await key("Enter", 13);
+    await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('.flight-panel__aircraft-current'))");
+    const editedCurrent = await evaluate(chrome, sessionId, "!document.querySelector('.flight-panel__aircraft-gallery')&&!!document.querySelector('.flight-panel__aircraft-controls')&&window.__aircraftFixture.applied.length===0&&!document.querySelector('dialog[open]')");
+    // Pointer clicks on any visible child use the same native card action.
+    let cardPartsEdit = true;
+    for (const part of ['img', 'strong', '.flight-panel__aircraft-card-footer > span:first-child', '.flight-panel__command']) {
+      await openGallery();
+      await evaluate(chrome, sessionId, `document.querySelector('button.flight-panel__aircraft-card.is-selected').querySelector(${JSON.stringify(part)}).click()`);
+      await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('.flight-panel__aircraft-current'))");
+      cardPartsEdit &&= await evaluate(chrome, sessionId, "window.__aircraftFixture.applied.length===0&&!document.querySelector('dialog[open]')");
+    }
+    await openGallery();
+    await choose("Cessna 172 Skyhawk");
+    await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('dialog[open]'))");
+    const warning = await evaluate(chrome, sessionId, dialogGeometry);
+    screenshots.push(await shot("confirm"));
+    for (let count = 0; count < 5; count++) await key("Tab", 9);
+    const focusTrapped = await evaluate(chrome, sessionId, "document.querySelector('dialog').contains(document.activeElement)");
+    await key("Escape", 27);
+    await waitForExpression(chrome, sessionId, "!document.querySelector('dialog[open]')");
+    const cancelled = await evaluate(chrome, sessionId, "window.__aircraftFixture.applied.length===0");
+    await choose("Cessna 172 Skyhawk");
+    await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('dialog[open]'))");
+    await clickText("Confirm");
     await waitForExpression(chrome, sessionId, "window.__aircraftFixture.applied.length===1");
-    const applied = await evaluate(chrome, sessionId, "window.__aircraftFixture.applied[0]");
-    const levels = dropdowns.find(dropdown => dropdown.options.includes("lod3"));
-    const passed = dropdowns.length === 2 && dropdowns.every(dropdown => dropdown.fitsText && !dropdown.stretched)
-      && tickboxes === 0 && levels?.options.includes("hd")
-      && geometry.controlsOutsideGallery && geometry.controlsBelowGallery && geometry.documentFits && geometry.focusVisible
-      && geometry.overflowY === "auto" && geometry.focusOutline !== "none" && controlFocus.visible
-      && applyFocus.visible && applyFocus.outlineStyle !== "none"
-      && appliedBefore === 0 && applied.aircraftId === "cirrus-vision-jet-g2" && applied.generationId === "g2+";
-    results.push({ ...viewport, passed, dropdowns, tickboxes, geometry, controlFocus, applyFocus, appliedBefore, applied, screenshot: viewport.name + ".png", applyScreenshot: viewport.name + "-apply.png" });
+    const loading = await evaluate(chrome, sessionId, `({busy:document.querySelector('.flight-panel__aircraft-picker').getAttribute('aria-busy')==='true',disabled:document.querySelector('.flight-panel__aircraft-current button').disabled&&Array.from(document.querySelectorAll('select')).every(select=>select.disabled),warningClosed:!document.querySelector('dialog[open]'),name:document.querySelector('.flight-panel__aircraft-current strong').textContent,noApply:${noApply}})`);
+    screenshots.push(await shot("loading"));
+    await evaluate(chrome, sessionId, "window.__aircraftFixture.finish(null)");
+    await waitForExpression(chrome, sessionId, "document.querySelector('.flight-panel__aircraft-current strong').textContent==='Cessna 172 Skyhawk'&&!document.querySelector('.flight-panel__aircraft-current button').disabled");
+
+    await openGallery();
+    await choose("Lockheed Martin F-35B Lightning II");
+    await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('dialog[open]'))");
+    await evaluate(chrome, sessionId, "document.querySelector('dialog input[type=checkbox]').click()");
+    await clickText("Confirm");
+    await waitForExpression(chrome, sessionId, "window.__aircraftFixture.applied.length===2");
+    await evaluate(chrome, sessionId, "window.__aircraftFixture.finish('Aircraft: f-35b\\nModel request failed: HTTP 404\\nFlight remains paused.')");
+    await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('.flight-panel__aircraft-error-report'))");
+    const error = await evaluate(chrome, sessionId, `({...${dialogGeometry},report:document.querySelector('.flight-panel__aircraft-error-report').textContent,oldAircraftRetained:document.querySelector('.flight-panel__aircraft-current strong').textContent==='Cessna 172 Skyhawk'})`);
+    screenshots.push(await shot("error"));
+    await clickText("Close");
+    await openGallery();
+    await choose("Cirrus Vision Jet");
+    await waitForExpression(chrome, sessionId, "window.__aircraftFixture.applied.length===3");
+    const suppressed = await evaluate(chrome, sessionId, "!document.querySelector('dialog[open]')&&localStorage.getItem('0sfs.aircraft-switch.skip-confirmation')==='true'");
+    await evaluate(chrome, sessionId, "window.__aircraftFixture.finish(null)");
+    await waitForExpression(chrome, sessionId, "!document.querySelector('.flight-panel__aircraft-current button').disabled");
+    await evaluate(chrome, sessionId, "(()=>{const select=document.querySelector('.flight-panel__model-controls select');select.value='hd';select.dispatchEvent(new Event('change',{bubbles:true}));})()");
+    await waitForExpression(chrome, sessionId, "window.__aircraftFixture.applied.length===4");
+    const directDetail = await evaluate(chrome, sessionId, "!document.querySelector('dialog[open]')&&window.__aircraftFixture.applied[3].lodId==='hd'");
+    await evaluate(chrome, sessionId, "window.__aircraftFixture.finish(null)");
+    await waitForExpression(chrome, sessionId, "!document.querySelector('.flight-panel__aircraft-current button').disabled");
+    const noPending = await evaluate(chrome, sessionId, noApply);
+    const passed = initial.galleryHidden && initial.controlsVisible && initial.noApply && initial.fits
+      && initial.roundedEnclosure && initial.childrenContained && initial.imageLoaded && !initial.genericIcon && initial.action === "Switch" && initial.image.endsWith("/cirrus-vision-jet.png")
+      && gallery.buttons === 3 && gallery.radios === 0 && gallery.settingsHidden && gallery.scrollable && gallery.fits
+      && gallery.summaryHidden && gallery.name === initial.name && gallery.image === initial.image && gallery.editText === "Edit" && gallery.editLabel === `Edit ${initial.name}` && gallery.editBottomRight && gallery.nestedButtons === 0 && editedCurrent && cardPartsEdit
+      && warning.modal && warning.fullscreen && warning.focusContained && warning.contentFits && warning.buttons.every(button => button.height >= 44)
+      && focusTrapped && cancelled && loading.busy && loading.disabled && loading.warningClosed && loading.noApply
+      && error.modal && error.fullscreen && error.contentFits && error.report.includes("HTTP 404") && error.oldAircraftRetained
+      && suppressed && directDetail && noPending;
+    results.push({ ...viewport, passed, initial, gallery, editedCurrent, cardPartsEdit, warning, focusTrapped, cancelled, loading, error, suppressed, directDetail, noPending, screenshots });
     await chrome.send("Target.closeTarget", { targetId });
   }
 } catch (error) { failures.push(error.stack ?? error.message); } finally { detach(); await chrome.close(); }
 const report = {
-  schemaVersion: 1, generatedAt: new Date().toISOString(), scope: "Actual aircraft React components, shell and CSS; static snapshot, no FDM.",
+  schemaVersion: 2, generatedAt: new Date().toISOString(),
+  scope: "Actual aircraft selector, fleet and production CSS in a static panel shell. Controlled promises and snapshots; no physics, world, mesh loading or pause gate proof.",
   serverStarted: false, visibleBrowserUsed: false, results, network, browserErrors, failures,
-  passed: results.every(result => result.passed) && failures.length === 0 && browserErrors.length === 0,
+  passed: results.length === 3 && results.every(result => result.passed) && failures.length === 0 && browserErrors.length === 0,
 };
 await writeFile(path.join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
 process.stdout.write(JSON.stringify({ passed: report.passed, report: path.join(out, "report.json"), results: results.map(({ name, passed }) => ({ name, passed })), failures, browserErrors }, null, 2) + "\n");

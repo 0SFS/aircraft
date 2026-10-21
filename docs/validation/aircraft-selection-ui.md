@@ -1,66 +1,145 @@
-# Aircraft family selection UI
+# Aircraft selection UI
 
-Implemented: 2026-09-12. Current bounded acceptance passed on 2026-09-13 during dependency centralization. The original implementation-time notes below remain historical.
+Updated 2026-10-21. This replaces the earlier radio-gallery, staged Apply and
+page-reload acceptance notes.
 
-## Acceptance update: 2026-09-13
+The persistence root cause and runtime lifecycle are retained in
+[the flight implementation handoff](../../../fly/docs/aircraft-switching.md).
 
-The installed-fork run passed the 21 app-shell and eight selection-panel tests, within 97 focused app tests. Headless component checks passed wide (1440×900), narrow (360×760) and short (740×360) viewport layouts, native family-radio keyboard navigation, Tab and Enter/Apply. The actual production app separately booted C172 and G1/G2/G3 with matching SDK/aircraft bytes. No dev server or visible browser was used.
+## Selecting and editing
 
-A minor LOD-select focus-outline clipping measurement remains on wide/narrow layouts; controls remain usable, and keyboard navigation scrolls Apply into view with its full focus outline. External terrain requests were blocked during the built-app artifact check, so these results do not establish terrain readiness or aircraft fidelity. Screenshots, measured bounds and scope are in the [centralization execution record](https://github.com/0SFS/research/blob/main/old/jsbsim-centralization-2026-09-13.md).
+The Aircraft tab starts with a compact paragraph grid containing the loaded
+aircraft's thumbnail, name and **Switch**. One visible rounded rectangle encloses
+the three elements, following the shared matryoshka ownership rule. The thumbnail
+comes from that aircraft family's artwork instead of a generic plane icon. Its
+default view edits that aircraft. The airspeed, altitude, heading and throttle
+readouts have been removed from this tab.
 
-## Selection and activation
+**Switch** opens a bounded image gallery and hides the loaded aircraft's summary
+and editing controls. Other aircraft are named native buttons, with no radio
+circles. The current aircraft's card shows its thumbnail, exact loaded name,
+**Currently loaded** status and a compact **Edit** label at the bottom right.
+The whole current-aircraft card is one native **Edit** button: its image, name,
+status, background and Edit label all return to the loaded aircraft's controls
+without confirmation or activation. Enter and Space use the same action, with
+no nested button. There is no duplicate image/name/Edit row above the gallery. Images
+are decorative, and a failed thumbnail leaves the named card and its fallback
+usable. The switch warning also uses the target aircraft's thumbnail.
 
-The Aircraft tab contains a bounded, scrollable image grid with one card per aircraft family: Cessna 172 Skyhawk and Cirrus Vision Jet. The selected aircraft's controls are below the gallery, outside its scrolling element. The grid adapts to the panel width; images keep an 8:5 aspect ratio. A failed or missing image leaves the aircraft name, radio control and an image-unavailable fallback usable.
+Clicking a different aircraft opens a fullscreen native warning dialog. **Cancel**
+or Escape keeps the current aircraft. **Confirm** starts the switch immediately,
+without Apply, a pending-changes banner or a page reload. **Don't show again** is
+saved when the warning is confirmed, under
+`0sfs.aircraft-switch.skip-confirmation`; later card choices start immediately.
+Cancelling a checked warning does not save that preference.
 
-Selecting a family stages its settings. The Vision Jet exposes G1, G2, G2+ and G3 in a compact native generation dropdown underneath the gallery, with its label inline; the C172 has no generation selector. G2+ currently maps to the existing G2 runtime until separate physics and package support is introduced. Draft generation and model choices are remembered separately for each family while the panel exists, including when visiting other tabs. They are not saved until Apply.
+During a switch the flight stays paused, aircraft controls are disabled, and a
+circular progress indicator occupies the aircraft's former screen position. The
+runtime must finish preparing the complete aircraft and loading its mesh before
+the switch promise resolves and flight can resume. A failure opens a fullscreen
+error report. The selector displays reports returned or thrown by its activation
+callback; failures after its old panel has been disposed are displayed by the
+runtime's stable error-dialog host.
 
-The current aircraft is named above the gallery. Pending choices and verbose explanatory text are now hidden behind a compact `?` details toggle in the control heading to reduce visual space. Apply & fly saves the complete choice and reloads the application once if the runtime aircraft ID changes, so the FDM package, control conventions, contact geometry, gauges and exterior change together. Merely selecting a card or generation does not load a mesh or change live physics. Applying model settings for the active runtime ID updates presentation without reloading, using one model resolve/load. Return to active aircraft settings restores the displayed selection to the live configuration.
+Model detail changes apply directly to the loaded aircraft. A generation change
+that selects another runtime package uses the same confirmation flow. The Vision
+Jet offers G1, G2, G2+ and G3; G2+ currently uses the G2 runtime. Model credits,
+source links, triangle counts and exact active model status remain under the
+compact **?** disclosure. The generation and LOD controls, including available HD
+choices, remain available in the editing view.
+Model inspection is collapsed at the end of the editing view so its mesh tree
+does not crowd the flight controls.
 
-The existing `osfs.aircraft`, `osfs.aircraft-lod`, `osfs.aircraft-generation` and `osfs.aircraft-opt-in-lods` preferences remain in use. Legacy `flight-sim.aircraft` and `flight-sim.aircraft-lod` reads remain supported. Runtime IDs are unchanged:
+## Checks and their scope
 
-| Family | Configuration | Runtime ID |
-| --- | --- | --- |
-| Cessna 172 | Default | `cessna-172` |
-| Cirrus Vision Jet | G1 | `cirrus-vision-jet` |
-| Cirrus Vision Jet | G2 | `cirrus-vision-jet-g2` |
-| Cirrus Vision Jet | G2+ (current placeholder) | `cirrus-vision-jet-g2` |
-| Cirrus Vision Jet | G3 | `cirrus-vision-jet-g3` |
+The selector's focused React suite contains 29 passing tests:
 
-An unavailable concrete LOD normalizes to Auto. The existing HD opt-in preference is retained across families, including families where it has no applicable control or mesh. Apply writes the presentation preferences, generation label, and aircraft ID and rolls back prior values on a save failure. A failed save is shown in the panel and does not activate the pending choice. Other global preference behavior is unchanged.
+```sh
+cd ../fly
+npm test -- src/flight/hud/AircraftSelectionPanel.test.tsx
+```
 
-## Retained controls and disclosures
+It covers separate editing/switching views, confirmation, Cancel and Escape,
+persisted warning suppression, disabling controls while activation is pending,
+returned and thrown diagnostic reports, direct model-detail changes, generation
+confirmation, active model status/attribution, failed-thumbnail fallback, live
+snapshot edits and modal keyboard isolation without trapping held-key releases.
+It also verifies distinct family thumbnails, the compact action labels, and the
+current gallery card's Edit action from each card region. The selector and
+aircraft panel test files together passed 31 tests after the whole-card change.
 
-The selected runtime definition supplies the available LODs, Auto choice, triangle counts, HD opt-in controls and model credits. Optional models disclose their credit and limitations before enabling them. The Vision Jet's third-party HD model remains opt-in, with hilos run's CC Attribution/source link and gear-up limitation. A still-loaded licensed mesh keeps its credit visible even while another aircraft is staged.
+The headless static UI check passed at 1440×900, 360×760 and 740×360 on 2026-10-21:
 
-Loading/ready/placeholder/error status, actual triangle count and the Auto-selected LOD describe only the exact active runtime ID. A staged different family or generation receives an activation hint instead of another aircraft's model status or error. Camera mode, airspeed/altitude/heading/throttle metrics, pause/resume and the flight keymap remain in the Aircraft tab. Weather, location and other global settings retain their existing locations.
+```sh
+cd ../fly
+node ../aircraft/scripts/check-aircraft-selection-headless.mjs
+```
 
-SF50 variants still share development physics and exterior meshes. Both the selected variant summary and family disclosure explain the limitations; G3 does not promise calibrated performance, a new cabin or complete generation-specific avionics. G2 remains original G2. G2+ currently selects the same runtime as G2 while remaining a separate future physics target. No flight-model coefficients, calibration targets, JSBSim or SDK lifecycle behavior changed.
+It builds the real selector with the real fleet and production CSS inside a
+small static panel shell. A controlled promise allows deterministic loading and
+failure states. The check uses headless Chrome through its debugging pipe; it
+starts no server and makes no external network requests. It verifies:
 
-## Source navigation and images
+- Native gallery buttons with no radio inputs, separate editing controls and
+  bounded scrolling.
+- An enclosing rounded border around thumbnail/name/Switch, no repeated summary
+  in the gallery, and an Edit label at the current card's bottom right. Clicking
+  the card's image, name, status or Edit label, or using its keyboard action,
+  returns to editing without applying another aircraft.
+- Fullscreen native warning/error dialogs, contained keyboard focus, Escape
+  cancellation and 44 px dialog action targets at all three viewport sizes.
+- One confirmation starting activation immediately; disabled controls until the
+  controlled activation promise finishes.
+- The diagnostic report, warning-suppression preference, direct LOD changes and
+  absence of Apply/reload/pending controls throughout the flow.
 
-- `src/flight/aircraft/aircraftIds.ts`: separate family and runtime ID types.
-- `src/flight/aircraft/aircraftCatalog.ts`: `AIRCRAFT_FAMILIES`, family lookup, variants, thumbnail metadata, LOD capabilities, credits and selection normalization.
-- `src/flight/aircraft/sf50Variants.ts`: existing SF50 runtime/generation metadata and development summaries.
-- `src/flight/hud/AircraftSelectionPanel.tsx`: gallery, generation/model controls, attribution, draft/active labels and Apply UI.
-- `src/flight/hud/FlightControlPanel.tsx`: drafts retained across tabs and the remaining flight controls.
-- `src/flight/createFlightSimApp.ts`: preference restoration, complete Apply persistence and runtime activation.
-- `src/flight/aircraft/createAircraftModel.ts`: `setPresentation` updates LOD and opt-in together for the active aircraft.
-- `src/styles/flight.css`: responsive image grid, separate controls, touch target sizes and focus styles.
-- `scripts/render-aircraft-thumbnails.py`: dependency-free offline thumbnail generation from the shipped GLB geometry and material colors.
-- `public/aircraft/thumbnails/`: static PNG renders of the shipped procedural LOD3 meshes; see the adjacent [provenance and regeneration instructions](../../public/aircraft/thumbnails/README.md).
+The final run's JSON report and fifteen screenshots are under
+`../fly/build/validation/aircraft-selection/2026-10-21_152810/`. Every viewport
+passed, with no browser exceptions or request failures. The narrow gallery and
+warning and the short error dialog were also visually inspected. The output is
+local, gitignored acceptance evidence; each run creates a new directory, and an
+explicit `--out=<new-directory>` can select another location.
 
-The thumbnails derive from the app-owned C172 and Vision Jet procedural meshes credited to felipegalin0. They do not use the third-party HD model or downloaded aircraft photography. There is no live 3D viewer mounted in a card. The accessible aircraft name comes from each card's native radio label; the image is decorative to avoid announcing the name twice. The family gallery uses a native radio group for single-selection and arrow-key behavior, with focus highlighting and focused cards brought into view. The separate generation dropdown uses a labeled native select; its keyboard behavior remains untested.
+This static check does **not** prove real physics replacement, successful GLB
+loading, pause gating, terrain readiness, retained world/canvas state or flight
+fidelity. Those require the production-runtime switch check and runtime tests.
+Its controlled snapshots must not be cited as evidence that another aircraft
+actually became flyable. The full FlightControlPanel integration tests separately
+cover removal of the tab's flight metrics and hiding its other editing sections
+while the gallery is open.
 
-## Pending acceptance checks
+The full application check also passed on 2026-10-21:
 
-Per the task's working boundaries, no Git commands, tests, builds, development servers, browser checks or extra verification pass ran. `python3 scripts/render-aircraft-thumbnails.py` generated the two 640×400 PNG assets (21,917 and 33,030 bytes). Static asset generation is implementation work, not a passing UI check; the resulting images have not been visually inspected. The following remain untested:
+```sh
+cd ../fly
+npm run check:aircraft-switch
+```
 
-1. Family selection and independent draft generation/model settings; drafts surviving tab changes; return to active settings.
-2. G1/G2/G2+/G3 restoration, including the legacy Vision Jet ID and both legacy preference keys; unavailable LOD normalization and retained HD preference.
-3. Exactly one complete-package reload for a changed runtime ID; no live mesh/physics change while staging; one presentation update for same-aircraft Apply.
-4. Save-failure feedback and rollback, plus activation/reload error handling.
-5. LOD/Auto, HD opt-in, credits, gear-up disclosure and development status; accurate active-model triangles, loading and errors without stale status on another selection.
-6. Thumbnail load failure, visible names/selected state, family-radio and generation-dropdown keyboard behavior, focus order and touch targets.
-7. Responsive grid and bounded scrolling on narrow, wide and short panels; selected controls remaining outside the gallery scroller.
+It uses real JSBSim/WASM, aircraft data and GLB meshes with an offline fallback
+globe. Every runtime (C172, Vision Jet G1/G2/G3 and F-35B) reached model-ready
+state with matching physics identity while keeping the same document, canvas,
+renderer and world. A held download blocked resume. A deliberately missing
+required F-35B airframe opened an error report, recovered the previous aircraft
+paused, and then succeeded on retry. An intentional reload restored the saved
+aircraft. The report and loading, failure and final-state screenshots are under
+`../fly/build/validation/aircraft-switch/2026-10-21_122717/`, with no browser
+exceptions or unexpected external requests. This check does not qualify live map
+streaming, aircraft performance or terrain fidelity.
 
-The later calibration task can resume from [the SF50 development handoff](https://github.com/0SFS/SF-50/blob/main/docs/old/sf50-development-handoff.md) and [variant models](https://github.com/0SFS/SF-50/blob/main/docs/validation/sf50-variant-models.md). The UI implementation does not validate aircraft performance or supersede the recorded evidence gates.
+## Source navigation
+
+- `src/AircraftSelectionPanel.tsx`: current-aircraft row, separate gallery,
+  generation/LOD editing, native dialogs, warning preference and diagnostic report.
+- `src/aircraftCatalog.ts`: families, runtime IDs, variants and selection normalization.
+- `../fly/src/flight/aircraft/fleet.ts`: assembled fleet, thumbnail metadata,
+  LOD capabilities, model credits and development disclosures.
+- `../fly/src/flight/hud/FlightControlPanel.tsx`: aircraft tab and remaining flight controls.
+- `../fly/src/flight/createFlightSimApp.ts`: persistence and complete runtime activation.
+- `../fly/src/styles/flight.css`: compact controls, responsive gallery, fullscreen
+  dialogs and loading indicator.
+- `scripts/check-aircraft-selection-headless.mjs`: reproducible static selector
+  layout/interaction evidence with screenshots and JSON report.
+
+The UI checks do not validate SF50 generation-specific performance, F-35B STOVL
+behavior, cabin differences or avionics completeness. The family disclosures and
+existing aircraft calibration evidence remain applicable.
