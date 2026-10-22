@@ -215,6 +215,11 @@ function readGearPosition(read: PropertyRead): number {
   return readGearCommand(read);
 }
 
+/** The state's `gearDownNorm` alone, for a reader that needs nothing else. */
+export function readGearDownNorm(sdk: JSBSimSdk): number {
+  return readGearPosition(surfacePropertyRead(sdk));
+}
+
 /** Test seam: forget the cached RPM property name. */
 export function resetPropellerRpmProperty(): void {
   resolvedRpmProperty = null;

@@ -10,6 +10,7 @@ import {
   maxReadableRadPerSec,
   NEUTRAL_CONTROL_SURFACES,
   readControlSurfaceState,
+  readGearDownNorm,
   resetPropellerRpmProperty,
   TYRE_BLURRED_U,
   TYRE_SHARP_U,
@@ -641,6 +642,37 @@ describe("reading JSBSim", () => {
     expect(readControlSurfaceState(sdk, "f-35b")).toEqual(readControlSurfaceState(scalarOnly, "f-35b"));
     expect(readControlSurfaceState(sdk, "f-35b").gearDownNorm).toBe(1);
     expect(createPropertyBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads the gear position alone exactly as the whole state reads it", () => {
+    const cases: Record<string, number>[] = [
+      { "gear/gear-pos-norm": 0.25, "gear/gear-cmd-norm": 1 },
+      { "gear/gear-pos-norm": 1.5 },
+      { "gear/gear-pos-norm": NaN, "gear/gear-cmd-norm": 0 },
+      { "gear/gear-cmd-norm": -0.5 },
+      {},
+    ];
+    for (const values of cases) {
+      const read = (name: string) => values[name] ?? 0;
+      const batchSdk = {
+        getPropertyValue: vi.fn(read),
+        createPropertyBatch: (paths: readonly string[]) => ({
+          missing: paths.filter((path) => !(path in values)),
+          read: (target: Float64Array) => { paths.forEach((path, slot) => { target[slot] = path in values ? values[path] : NaN; }); return target; },
+          dispose() {},
+        }),
+      } as unknown as JSBSimSdk;
+      const throwing = { getPropertyValue: (name: string) => {
+        if (name in values) return values[name];
+        throw new Error(`no ${name}`);
+      } } as unknown as JSBSimSdk;
+      for (const sdk of [batchSdk, throwing, { getPropertyValue: read } as unknown as JSBSimSdk]) {
+        expect(readGearDownNorm(sdk)).toBe(readControlSurfaceState(sdk, "f-35b").gearDownNorm);
+      }
+      vi.mocked(batchSdk.getPropertyValue).mockClear();
+      readGearDownNorm(batchSdk);
+      for (const [path] of vi.mocked(batchSdk.getPropertyValue).mock.calls) expect(path in values).toBe(false);
+    }
   });
 });
 
