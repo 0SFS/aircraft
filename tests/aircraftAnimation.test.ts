@@ -1,7 +1,7 @@
 import {
   MeshBuilder, NullEngine, PBRMaterial, Quaternion, Scene, Texture, TransformNode, Vector3,
 } from "@babylonjs/core";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { JSBSimSdk } from "@felipegalind0/jsbsim";
 import {
   applyAircraftRig,
@@ -594,6 +594,53 @@ describe("reading JSBSim", () => {
       getPropertyValue: () => { throw new Error("no such property"); },
     } as unknown as JSBSimSdk;
     expect(readControlSurfaceState(sdk)).toEqual(NEUTRAL_CONTROL_SURFACES);
+  });
+
+  it("refreshes the properties in one native batch, and reads the absent ones as before", () => {
+    const values: Record<string, number> = {
+      "fcs/left-aileron-pos-rad": 0.2, "fcs/elevator-pos-rad": -0.1, "fcs/rudder-pos-rad": 0.05,
+      "fcs/tef-pos-rad": 0.3, "gear/gear-pos-norm": 0.5, "velocities/vg-fps": 100,
+      "gear/unit[1]/WOW": 1, "fcs/stovl-pos-norm": 0.7, "fcs/nozzle-pitch-rad": 1.2,
+    };
+    const scalar = vi.fn((name: string) => values[name] ?? 0);
+    const batches: { missing: readonly string[]; disposed: boolean }[] = [];
+    const createPropertyBatch = vi.fn((paths: readonly string[]) => {
+      const batch = {
+        missing: paths.filter((path) => !(path in values)),
+        disposed: false,
+        read(target: Float64Array) {
+          if (batch.disposed) throw new Error("PropertyBatch has been disposed.");
+          paths.forEach((path, slot) => { target[slot] = batch.missing.includes(path) ? NaN : values[path]; });
+          return target;
+        },
+        dispose() { batch.disposed = true; },
+      };
+      batches.push(batch);
+      return batch;
+    });
+    const sdk = { getPropertyValue: scalar, createPropertyBatch } as unknown as JSBSimSdk;
+    const scalarOnly = { getPropertyValue: (name: string) => values[name] ?? 0 } as unknown as JSBSimSdk;
+
+    expect(readControlSurfaceState(sdk, "f-35b")).toEqual(readControlSurfaceState(scalarOnly, "f-35b"));
+    expect(createPropertyBatch).toHaveBeenCalledOnce();
+    expect(scalar.mock.calls.length).toBeGreaterThan(0);
+    for (const [path] of scalar.mock.calls) expect(batches[0].missing).toContain(path);
+
+    // Each read refreshes the batch, and a property that appears later is read.
+    values["fcs/elevator-pos-rad"] = 0.15;
+    values["fcs/left-ruddervator-pos-rad"] = 0.1;
+    const later = readControlSurfaceState(sdk, "f-35b");
+    expect(later.elevatorRad).toBe(0.15);
+    expect(later.ruddervatorLeftRad).toBe(0.1);
+    expect(later).toEqual(readControlSurfaceState(scalarOnly, "f-35b"));
+    expect(createPropertyBatch).toHaveBeenCalledOnce();
+
+    // Loading another model disposes the SDK's batches; the next read resolves a new one.
+    batches[0].disposed = true;
+    values["gear/gear-pos-norm"] = 1;
+    expect(readControlSurfaceState(sdk, "f-35b")).toEqual(readControlSurfaceState(scalarOnly, "f-35b"));
+    expect(readControlSurfaceState(sdk, "f-35b").gearDownNorm).toBe(1);
+    expect(createPropertyBatch).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -10,7 +10,7 @@ import {
   Vector3,
   type Scene,
 } from "@babylonjs/core";
-import type { JSBSimSdk } from "@felipegalind0/jsbsim";
+import type { JSBSimSdk, PropertyBatch } from "@felipegalind0/jsbsim";
 import type { AircraftId } from "./aircraftIds";
 import { bindEngineNozzleRig, type EngineNozzleRigDefinition } from "@0sfs/engines/engineNozzleRig";
 
@@ -88,27 +88,92 @@ const RPM_PROPERTIES = [
 
 let resolvedRpmProperty: string | null = null;
 
-function readNumber(sdk: JSBSimSdk, property: string): number {
+/** Answers a property as getPropertyValue does: its value, or a throw. */
+type PropertyRead = (property: string) => number;
+
+// Every property the surface state can read. A native batch resolves them once
+// per loaded model and refreshes them all in one call, instead of converting
+// each path string and walking the property tree for it every frame.
+const SURFACE_PROPERTIES = [
+  "fcs/left-aileron-pos-rad", "fcs/right-aileron-pos-rad", "fcs/elevator-pos-rad",
+  "fcs/rudder-pos-rad", "fcs/left-ruddervator-pos-rad", "fcs/right-ruddervator-pos-rad",
+  "fcs/tef-pos-rad", "fcs/flap-pos-deg", ...RPM_PROPERTIES, "gear/gear-pos-norm",
+  "gear/gear-cmd-norm", "velocities/vg-fps", ...WOW_PROPERTIES, "fcs/stovl-pos-norm",
+  "fcs/nozzle-pitch-rad", "fcs/nozzle-yaw-rad",
+];
+const SURFACE_SLOTS = new Map(SURFACE_PROPERTIES.map((property, slot) => [property, slot]));
+
+interface SurfaceBatch {
+  readonly batch: PropertyBatch | null;
+  /** Slots whose path existed when the batch was made. */
+  readonly present: readonly boolean[];
+  readonly values: Float64Array;
+}
+
+const surfaceBatches = new WeakMap<JSBSimSdk, SurfaceBatch>();
+
+function createSurfaceBatch(sdk: JSBSimSdk): SurfaceBatch {
+  let batch: PropertyBatch | null = null;
+  // Test doubles and older WASM builds have only the scalar interface.
+  if (typeof sdk.createPropertyBatch === "function") {
+    try { batch = sdk.createPropertyBatch(SURFACE_PROPERTIES, { create: false }); } catch { /* scalar reads */ }
+  }
+  const missing = new Set(batch?.missing ?? []);
+  return {
+    batch,
+    present: SURFACE_PROPERTIES.map((property) => batch !== null && !missing.has(property)),
+    values: new Float64Array(SURFACE_PROPERTIES.length),
+  };
+}
+
+/**
+ * Refreshes the surface properties at once. A path that was absent when the
+ * batch was made keeps its scalar read, so it still answers whatever the model
+ * holds by then.
+ */
+function surfacePropertyRead(sdk: JSBSimSdk): PropertyRead {
+  const scalar: PropertyRead = (property) => sdk.getPropertyValue(property);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let surface = surfaceBatches.get(sdk);
+    if (!surface) { surface = createSurfaceBatch(sdk); surfaceBatches.set(sdk, surface); }
+    if (!surface.batch) return scalar;
+    try {
+      surface.batch.read(surface.values);
+    } catch {
+      // Loading another model disposes the SDK's batches; resolve the new one.
+      surfaceBatches.delete(sdk);
+      continue;
+    }
+    const { present, values } = surface;
+    return (property) => {
+      const slot = SURFACE_SLOTS.get(property);
+      return slot !== undefined && present[slot] ? values[slot] : sdk.getPropertyValue(property);
+    };
+  }
+  return scalar;
+}
+
+function readNumber(read: PropertyRead, property: string): number {
   try {
-    const value = sdk.getPropertyValue(property);
+    const value = read(property);
     return Number.isFinite(value) ? value : 0;
   } catch {
     return 0;
   }
 }
 
-function readOptionalNumber(sdk: JSBSimSdk, property: string): number | undefined {
+function readOptionalNumber(read: PropertyRead, property: string): number | undefined {
   try {
-    const value = sdk.getPropertyValue(property);
+    const value = read(property);
     return Number.isFinite(value) ? value : undefined;
   } catch {
     return undefined;
   }
 }
 
-function readPropellerRpm(sdk: JSBSimSdk): number {
+function readPropellerRpm(read: PropertyRead): number {
   if (resolvedRpmProperty) {
-    const value = readNumber(sdk, resolvedRpmProperty);
+    const value = readNumber(read, resolvedRpmProperty);
     if (value !== 0) return value;
   }
   // JSBSim answers an unknown property with 0 rather than raising, so "the
@@ -116,7 +181,7 @@ function readPropellerRpm(sdk: JSBSimSdk): number {
   // does not exist. Only a non-zero reading proves a spelling is the live one;
   // until then, re-probe each frame. A stopped engine simply reads zero.
   for (const property of RPM_PROPERTIES) {
-    const value = readNumber(sdk, property);
+    const value = readNumber(read, property);
     if (value !== 0) {
       resolvedRpmProperty = property;
       return value;
@@ -126,9 +191,9 @@ function readPropellerRpm(sdk: JSBSimSdk): number {
 }
 
 /** Reads a legacy command only when no physical gear position is available. */
-function readGearCommand(sdk: JSBSimSdk): number {
+function readGearCommand(read: PropertyRead): number {
   try {
-    const value = sdk.getPropertyValue("gear/gear-cmd-norm");
+    const value = read("gear/gear-cmd-norm");
     return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
   } catch {
     return 1;
@@ -140,14 +205,14 @@ function readGearCommand(sdk: JSBSimSdk): number {
  * legacy models can omit it, in which case the commanded state is the explicit
  * fallback rather than an independent visual timer.
  */
-function readGearPosition(sdk: JSBSimSdk): number {
+function readGearPosition(read: PropertyRead): number {
   try {
-    const value = sdk.getPropertyValue("gear/gear-pos-norm");
+    const value = read("gear/gear-pos-norm");
     if (Number.isFinite(value)) return Math.min(1, Math.max(0, value));
   } catch {
     // Fall through to the command-only fallback below.
   }
-  return readGearCommand(sdk);
+  return readGearCommand(read);
 }
 
 /** Test seam: forget the cached RPM property name. */
@@ -160,27 +225,28 @@ export type ControlSurfaceObservations = Pick<ControlSurfaceState, "nozzlePositi
 
 export function readControlSurfaceState(sdk: JSBSimSdk, aircraftId?: AircraftId,
   observations: ControlSurfaceObservations = {}): ControlSurfaceState {
-  const aileronLeftRad = readNumber(sdk, "fcs/left-aileron-pos-rad");
+  const read = surfacePropertyRead(sdk);
+  const aileronLeftRad = readNumber(read, "fcs/left-aileron-pos-rad");
   const f35b = aircraftId === "f-35b";
   const nozzlePositionNorm = observations.nozzlePositionNorm;
   return {
     aileronLeftRad,
     // The trial F-35B FCS reports one differential aileron, not two properties.
-    aileronRightRad: f35b ? -aileronLeftRad : readNumber(sdk, "fcs/right-aileron-pos-rad"),
-    elevatorRad: readNumber(sdk, "fcs/elevator-pos-rad"),
-    rudderRad: readNumber(sdk, "fcs/rudder-pos-rad"),
-    ruddervatorLeftRad: readNumber(sdk, "fcs/left-ruddervator-pos-rad"),
-    ruddervatorRightRad: readNumber(sdk, "fcs/right-ruddervator-pos-rad"),
-    flapRad: f35b ? readNumber(sdk, "fcs/tef-pos-rad") : readNumber(sdk, "fcs/flap-pos-deg") * DEG_TO_RAD,
-    propellerRadPerSec: readPropellerRpm(sdk) * RPM_TO_RAD_PER_SEC,
-    gearDownNorm: readGearPosition(sdk),
+    aileronRightRad: f35b ? -aileronLeftRad : readNumber(read, "fcs/right-aileron-pos-rad"),
+    elevatorRad: readNumber(read, "fcs/elevator-pos-rad"),
+    rudderRad: readNumber(read, "fcs/rudder-pos-rad"),
+    ruddervatorLeftRad: readNumber(read, "fcs/left-ruddervator-pos-rad"),
+    ruddervatorRightRad: readNumber(read, "fcs/right-ruddervator-pos-rad"),
+    flapRad: f35b ? readNumber(read, "fcs/tef-pos-rad") : readNumber(read, "fcs/flap-pos-deg") * DEG_TO_RAD,
+    propellerRadPerSec: readPropellerRpm(read) * RPM_TO_RAD_PER_SEC,
+    gearDownNorm: readGearPosition(read),
     // Wheels roll at ground speed, not airspeed: a headwind does not spin them.
-    groundSpeedMps: readNumber(sdk, "velocities/vg-fps") * FEET_TO_METERS,
-    onGround: WOW_PROPERTIES.some((property) => readNumber(sdk, property) > 0),
-    stovlPositionNorm: f35b ? Math.min(1, Math.max(0, readNumber(sdk, "fcs/stovl-pos-norm"))) : 0,
+    groundSpeedMps: readNumber(read, "velocities/vg-fps") * FEET_TO_METERS,
+    onGround: WOW_PROPERTIES.some((property) => readNumber(read, property) > 0),
+    stovlPositionNorm: f35b ? Math.min(1, Math.max(0, readNumber(read, "fcs/stovl-pos-norm"))) : 0,
     ...(f35b ? {
-      nozzlePitchRad: readOptionalNumber(sdk, "fcs/nozzle-pitch-rad"),
-      nozzleYawRad: readOptionalNumber(sdk, "fcs/nozzle-yaw-rad"),
+      nozzlePitchRad: readOptionalNumber(read, "fcs/nozzle-pitch-rad"),
+      nozzleYawRad: readOptionalNumber(read, "fcs/nozzle-yaw-rad"),
     } : {}),
     ...(Number.isFinite(nozzlePositionNorm) ? { nozzlePositionNorm } : {}),
   };
