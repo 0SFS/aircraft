@@ -35,6 +35,12 @@ export interface AircraftEntity {
   setChaseFrame(rotation: Quaternion | null): void;
   /** Both flight cameras' vertical field of view, in degrees. */
   setFieldOfView(degrees: number): void;
+  /**
+   * Turns the cockpit camera about the pilot eye, as a 360 photograph's look:
+   * heading clockwise from the nose, pitch above the aircraft's horizontal
+   * plane, no roll of its own, and the vertical field of view.
+   */
+  lookFromCockpit(look: { headingDeg: number; pitchDeg: number; verticalFovDeg: number }): void;
   /** Both flight cameras' near clipping plane, in metres. */
   setNearClipMeters(meters: number): void;
   setViewMode(mode: FlightViewMode): void;
@@ -187,6 +193,14 @@ export function createPlaceholderAircraft(
     setFieldOfView(degrees): void {
       firstPersonCamera.fov = degrees * RADIANS_PER_DEGREE;
       thirdPersonCamera.fov = degrees * RADIANS_PER_DEGREE;
+    },
+    lookFromCockpit({ headingDeg, pitchDeg, verticalFovDeg }): void {
+      if (![headingDeg, pitchDeg, verticalFovDeg].every(Number.isFinite)) return;
+      // The camera starts turned half a turn to face the nose; a right-handed scene mirrors both turns.
+      const turn = scene.useRightHandedSystem ? -1 : 1;
+      Quaternion.RotationYawPitchRollToRef(Math.PI + turn * headingDeg * RADIANS_PER_DEGREE, -turn * pitchDeg * RADIANS_PER_DEGREE, 0,
+        firstPersonCamera.rotationQuaternion!);
+      firstPersonCamera.fov = verticalFovDeg * RADIANS_PER_DEGREE;
     },
     setNearClipMeters(meters): void {
       firstPersonCamera.minZ = meters;
