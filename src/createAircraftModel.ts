@@ -10,6 +10,7 @@ import {
   type AbstractMesh,
   type AssetContainer,
   type ISceneLoaderProgressEvent,
+  type Material,
   type Scene,
 } from "@babylonjs/core";
 import { hiddenDepthOccludersReady, unwatchHiddenDepthOccluder, warmHiddenDepthOccluders, watchHiddenDepthOccluder } from "@0sfs/exhaust/engineExhaustDepth";
@@ -54,6 +55,8 @@ export interface AircraftModelOptions {
   lodId: AircraftLodId;
   /** Debug override: draw wheel/arm geometry even with the native gear fully stowed. */
   renderStowedGear?: boolean;
+  /** Part of each see-through window material's authored opacity drawn, 0 to 1; 1 when omitted. */
+  windowTint?: number;
   /** Initial isolated view of catalog-declared engine-test assemblies; preserves their hierarchy. */
   engineOnly?: boolean;
   /** Chase distance drives "auto" level selection. */
@@ -84,6 +87,8 @@ export interface AircraftModelHandle {
   refreshAutoLod(): void;
   /** Apply a live debug override using the most recent physical gear observation. */
   setRenderStowedGear(enabled: boolean): void;
+  /** Scale the see-through window materials' authored opacity, 0 to 1, now and for every later load. */
+  setWindowTint(fraction: number): void;
   /** Cache physical travel, including during loading. Unknown observations preserve the last state. */
   updateGearVisibility(actualGearDownNorm: number, withinScheduledFrame?: boolean): void;
   /**
@@ -110,6 +115,7 @@ interface LoadedModel {
   containers: AssetContainer[];
   holder: TransformNode;
   stowedGearMeshes: { mesh: AbstractMesh; originalVisibility: boolean }[];
+  windows: { material: Material; authoredAlpha: number }[];
   /** Null for the normal view; otherwise only these meshes can become visible. */
   engineTestMeshes: ReadonlySet<AbstractMesh> | null;
 }
@@ -148,6 +154,7 @@ export function createAircraftModel(
   let pending: { key: string; controller: AbortController } | null = null;
   let disposed = false;
   let renderStowedGear = options.renderStowedGear ?? false;
+  let windowTint = options.windowTint ?? 1;
   let actualGearDownNorm: number | null = null;
   // Bumped when a light changes the material variant hidden gear was compiled with.
   let gearWarmGeneration = 0;
@@ -196,6 +203,18 @@ export function createAircraftModel(
         && (model.engineTestMeshes === null || model.engineTestMeshes.has(mesh));
       if (mesh.isVisible === visible) continue;
       mesh.isVisible = visible;
+      changed = true;
+    }
+    return changed;
+  };
+
+  /** Between two tints below one, Babylon changes a uniform: no shader recompiles. */
+  const applyWindowTint = (model: LoadedModel): boolean => {
+    let changed = false;
+    for (const { material, authoredAlpha } of model.windows) {
+      const alpha = authoredAlpha * windowTint;
+      if (material.alpha === alpha) continue;
+      material.alpha = alpha;
       changed = true;
     }
     return changed;
@@ -348,8 +367,12 @@ export function createAircraftModel(
         holder.parent = root;
         holder.setEnabled(false);
         const stowedGearNames = new Set(definition.stowedGearNodeNames ?? []);
+        const windowNames = new Set(definition.windowMaterialNames ?? []);
         loaded = {
           key, lodId, triangles, containers, holder, engineTestMeshes,
+          windows: containers.flatMap(container => container.materials)
+            .filter(material => windowNames.has(material.name))
+            .map(material => ({ material, authoredAlpha: material.alpha })),
           stowedGearMeshes: meshes
             .filter(mesh => stowedGearNames.has(mesh.name) || stowedGearNames.has(mesh.name.replace(/_primitive\d+$/, "")))
             .map(mesh => {
@@ -358,6 +381,8 @@ export function createAircraftModel(
               return { mesh, originalVisibility: mesh.isVisible };
             }),
         };
+        // Compiled as it will be drawn; applied again at reveal for a change made meanwhile.
+        applyWindowTint(loaded);
         for (const node of roots) node.parent = holder;
         for (const container of containers) container.addAllToScene();
         // Hide geometry only: every transform and selected ancestor stays in
@@ -394,6 +419,7 @@ export function createAircraftModel(
         // Cached physics/debug state is applied before reveal; a loaded model
         // never flashes extended geometry while the native gear is stowed.
         applyGearVisibility(loaded);
+        applyWindowTint(loaded);
         loaded.holder.setEnabled(true);
         rig = preparedRig;
         options.onMeshRootsChange?.(roots.filter((node): node is TransformNode => node instanceof TransformNode));
@@ -476,6 +502,11 @@ export function createAircraftModel(
       if (disposed || enabled === renderStowedGear) return;
       renderStowedGear = enabled;
       if (shown && applyGearVisibility(shown)) requestRender();
+    },
+    setWindowTint(fraction): void {
+      if (disposed || !Number.isFinite(fraction)) return;
+      windowTint = Math.min(1, Math.max(0, fraction));
+      if (shown && applyWindowTint(shown)) requestRender();
     },
     updateGearVisibility(position, withinScheduledFrame = false): void {
       if (disposed || !Number.isFinite(position) || position < 0 || position > 1 || position === actualGearDownNorm) return;

@@ -217,6 +217,14 @@ export const AIRCRAFT_PARAMETERS_5 = [
     appliesLive: true,
     source: "aircraft/src/createPlaceholderAircraft.ts",
   },
+  {
+    id: "osfs.aircraft.windowTint",
+    label: "Window tint",
+    description: "How much of the model's own tint its see-through canopy and windows draw: at 100% they darken the view through them as the model was made, at 0% they are clear. Their reflections stay either way, and aircraft with opaque windows are unchanged.",
+    unit: "fraction", kind: "number", step: 0.05, bounds: within(0, 1), alwaysShowTrack: true, default: 0.25,
+    defaultReason: "A quarter of AF267's F-35B canopy tint: the full tint hid too much of the outside from the cockpit.",
+    home: main(CAMERA), appliesLive: true, source: "aircraft/src/createAircraftModel.ts",
+  },
 ] as const satisfies readonly ParameterSpec[];
 
 export const AIRCRAFT_PARAMETERS_6 = [

@@ -158,6 +158,10 @@ export interface AircraftDefinition {
   cockpitOffset?: { x: number; y: number; z: number };
   /** The exterior asset includes an interior that can be drawn in cockpit view. */
   cockpitMesh?: boolean;
+  /** See-through glazing materials, whose authored opacity the window tint setting scales. */
+  windowMaterialNames?: readonly string[];
+  /** The cockpit's display materials, whose picture the host may replace with its own interface. */
+  screenMaterialNames?: readonly string[];
   /** Native nozzle-position observer driving the model's optional petal rig. */
   nozzlePositionEngineIndex?: number;
   /** Authored wheel/arm geometry hidden at native gear position zero; doors stay visible. */
