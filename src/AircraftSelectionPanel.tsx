@@ -1,4 +1,4 @@
-import { HelpTip } from "foss-earth/shell";
+import { HelpTip, Resettable } from "foss-earth/shell";
 import { Plane } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
@@ -270,12 +270,16 @@ export function AircraftSelectionPanel({
             <legend>Model detail</legend>
             <label className="flight-panel__field">
               <span>Level of detail</span>
-              <select className="flight-panel__select" value={editingSelection.lodId}
-                disabled={busy || offered.length === 0}
-                onChange={event => updateModel({ ...editingSelection, lodId: event.target.value as AircraftLodId })}>
-                <option value="auto">Auto (by chase distance)</option>
-                {offered.map(lod => <option key={lod.id} value={lod.id}>{`${lod.label} — ${lod.triangles.toLocaleString()} tris`}</option>)}
-              </select>
+              <Resettable changed={!busy && offered.length > 0 && editingSelection.lodId !== "auto"}
+                label="Reset Level of detail to the default: Auto (by chase distance)"
+                onReset={() => updateModel({ ...editingSelection, lodId: "auto" })}>
+                <select className="flight-panel__select" value={editingSelection.lodId}
+                  disabled={busy || offered.length === 0}
+                  onChange={event => updateModel({ ...editingSelection, lodId: event.target.value as AircraftLodId })}>
+                  <option value="auto">Auto (by chase distance)</option>
+                  {offered.map(lod => <option key={lod.id} value={lod.id}>{`${lod.label} — ${lod.triangles.toLocaleString()} tris`}</option>)}
+                </select>
+              </Resettable>
             </label>
           </fieldset>
         </section>
