@@ -182,6 +182,8 @@ export interface AircraftDefinition {
     engineIndices: readonly number[];
     /** Representative plume hue for the HUD, not a fixed physical flame color. */
     accentColor: string;
+    /** The throttle command above which the engine selects afterburner; one push of the throttle stops here. */
+    throttleDetent: number;
   };
   /**
    * Blades on the propeller, or 0 for a jet. Sets how fast the blades can turn
