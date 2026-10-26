@@ -3,6 +3,7 @@ import "@babylonjs/loaders/glTF";
 import {
   Constants,
   LoadAssetContainerAsync,
+  Matrix,
   Quaternion,
   RenderTargetTexture,
   Texture,
@@ -11,6 +12,7 @@ import {
   type AssetContainer,
   type ISceneLoaderProgressEvent,
   type Material,
+  Vector3,
   type Scene,
 } from "@babylonjs/core";
 import { hiddenDepthOccludersReady, unwatchHiddenDepthOccluder, warmHiddenDepthOccluders, watchHiddenDepthOccluder } from "@0sfs/exhaust/engineExhaustDepth";
@@ -19,6 +21,7 @@ import { bindAircraftRig, disposeAircraftRig, type AircraftRig } from "./aircraf
 import {
   getAircraftDefinition,
   resolveLod,
+  type AircraftDefinition,
   type AircraftId,
   type AircraftLodId,
   type AircraftLodMeshId,
@@ -74,6 +77,36 @@ export interface AircraftModelOptions {
   loadContainer?(url: string, scene: Scene, onProgress: (event: ISceneLoaderProgressEvent) => void): Promise<AssetContainer>;
   /** Overridable so tests need no compiled materials: resolves when the meshes can be drawn. */
   whenReady?(meshes: readonly AbstractMesh[], signal: AbortSignal): Promise<void>;
+  /**
+   * Called once per load, after the rig binds and before readiness, while
+   * nothing of the model is drawn. It may change the loaded geometry and build
+   * meshes under `frame`; those are waited for and shown with the model.
+   * Throwing fails that load.
+   */
+  prepareModel?(model: AircraftModelPreparing): AircraftModelPreparation | null;
+}
+
+/** A loaded model before it is shown. */
+export interface AircraftModelPreparing {
+  aircraftId: AircraftId;
+  lodId: AircraftLodMeshId;
+  meshes: readonly AbstractMesh[];
+  /**
+   * A node inside the model that sits on `parent`'s frame once the model is
+   * placed. What is built under it shows, hides and goes with the model.
+   */
+  frame: TransformNode;
+  /** A mesh's local coordinates to `frame`'s, whether or not the model is placed yet. */
+  frameFromMesh(mesh: AbstractMesh): Matrix;
+}
+
+export interface AircraftModelPreparation {
+  /** Meshes the preparation built, compiled with the model's before it shows. */
+  meshes: readonly AbstractMesh[];
+  /** In the frame the model first shows, before it is enabled. */
+  reveal?(): void;
+  /** Before the model's nodes are disposed. */
+  dispose?(): void;
 }
 
 export interface AircraftModelHandle {
@@ -118,6 +151,7 @@ interface LoadedModel {
   windows: { material: Material; authoredAlpha: number }[];
   /** Null for the normal view; otherwise only these meshes can become visible. */
   engineTestMeshes: ReadonlySet<AbstractMesh> | null;
+  preparation: AircraftModelPreparation | null;
 }
 
 /**
@@ -175,6 +209,8 @@ export function createAircraftModel(
   };
 
   const disposeModel = (model: LoadedModel): void => {
+    model.preparation?.dispose?.();
+    model.preparation = null;
     for (const { mesh } of model.stowedGearMeshes) unwatchHiddenDepthOccluder(mesh);
     for (const container of model.containers) container.dispose();
     model.holder.dispose();
@@ -307,6 +343,30 @@ export function createAircraftModel(
   const onLightRemoved = scene.onLightRemovedObservable.add(noteGearMaterialsDirty);
   const onBeforeRender = scene.onBeforeRenderObservable.add(() => { warmHiddenGear(); });
 
+  /** The hook's frame undoes the placement the root takes at reveal, so it sits on `parent`'s frame. */
+  const prepare = (model: LoadedModel, meshes: readonly AbstractMesh[], definition: AircraftDefinition): AircraftModelPreparation | null => {
+    const offset = definition.modelOffset;
+    const placement = Matrix.Compose(
+      Vector3.One(),
+      Quaternion.RotationYawPitchRoll(definition.modelYawRad, 0, 0),
+      new Vector3(offset.x, offset.y, offset.z),
+    );
+    const frame = new TransformNode(`${model.holder.name}-frame`, scene);
+    frame.parent = model.holder;
+    frame.rotationQuaternion = Quaternion.Identity();
+    placement.clone().invert().decompose(frame.scaling, frame.rotationQuaternion, frame.position);
+    model.preparation = options.prepareModel!({
+      aircraftId: state.aircraftId,
+      lodId: model.lodId,
+      meshes,
+      frame,
+      frameFromMesh: mesh => mesh.computeWorldMatrix(true)
+        .multiply(Matrix.Invert(model.holder.computeWorldMatrix(true)))
+        .multiply(placement),
+    });
+    return model.preparation;
+  };
+
   const load = (key: string, lodId: AircraftLodMeshId, path: string, triangles: number, chosen: boolean): void => {
     const controller = new AbortController();
     const current = { key, controller };
@@ -369,7 +429,7 @@ export function createAircraftModel(
         const stowedGearNames = new Set(definition.stowedGearNodeNames ?? []);
         const windowNames = new Set(definition.windowMaterialNames ?? []);
         loaded = {
-          key, lodId, triangles, containers, holder, engineTestMeshes,
+          key, lodId, triangles, containers, holder, engineTestMeshes, preparation: null,
           windows: containers.flatMap(container => container.materials)
             .filter(material => windowNames.has(material.name))
             .map(material => ({ material, authoredAlpha: material.alpha })),
@@ -405,7 +465,8 @@ export function createAircraftModel(
           aircraftId: definition.id,
           engineNozzle: definition.engineAssets?.rig,
         });
-        await whenReady(meshes, controller.signal);
+        const prepared = options.prepareModel ? prepare(loaded, meshes, definition) : null;
+        await whenReady(prepared ? meshes.concat(prepared.meshes) : meshes, controller.signal);
         if (!isCurrent()) {
           disposeAircraftRig(preparedRig);
           disposeModel(loaded);
@@ -420,6 +481,7 @@ export function createAircraftModel(
         // never flashes extended geometry while the native gear is stowed.
         applyGearVisibility(loaded);
         applyWindowTint(loaded);
+        loaded.preparation?.reveal?.();
         loaded.holder.setEnabled(true);
         rig = preparedRig;
         options.onMeshRootsChange?.(roots.filter((node): node is TransformNode => node instanceof TransformNode));
