@@ -5,8 +5,15 @@ export type AircraftId = (typeof AIRCRAFT_IDS)[number];
 export const AIRCRAFT_FAMILY_IDS = ["cessna-172", "cirrus-vision-jet", "f-35b"] as const;
 export type AircraftFamilyId = (typeof AIRCRAFT_FAMILY_IDS)[number];
 
+const extraAircraftIds = new Set<string>();
+
+/** A mod may add an aircraft id that is not in the built-in tuple. */
+export function registerAircraftId(id: string): void {
+  extraAircraftIds.add(id);
+}
+
 export function isAircraftId(value: unknown): value is AircraftId {
-  return typeof value === "string" && (AIRCRAFT_IDS as readonly string[]).includes(value);
+  return typeof value === "string" && ((AIRCRAFT_IDS as readonly string[]).includes(value) || extraAircraftIds.has(value));
 }
 
 export function isAircraftFamilyId(value: unknown): value is AircraftFamilyId {

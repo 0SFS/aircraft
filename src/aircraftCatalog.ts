@@ -6,6 +6,7 @@ import {
   type AircraftId,
   isAircraftFamilyId,
   isAircraftId,
+  registerAircraftId,
 } from "./aircraftIds";
 
 export { AIRCRAFT_FAMILY_IDS, AIRCRAFT_IDS, isAircraftFamilyId, isAircraftId };
@@ -205,6 +206,21 @@ export const AIRCRAFT_CATALOG: readonly AircraftDefinition[] = [];
  * aircraft packages, in the order the gallery offers them. Called once, before
  * anything looks an aircraft up.
  */
+/** Adds one aircraft mod after the built-in fleet is already registered. */
+export function registerAircraftMod(
+  family: AircraftFamilyDefinition,
+  catalog: readonly AircraftDefinition[],
+): void {
+  if (!AIRCRAFT_FAMILIES.some(item => item.id === family.id)) {
+    (AIRCRAFT_FAMILIES as AircraftFamilyDefinition[]).push(family);
+  }
+  for (const definition of catalog) {
+    if (AIRCRAFT_CATALOG.some(item => item.id === definition.id)) continue;
+    registerAircraftId(definition.id);
+    (AIRCRAFT_CATALOG as AircraftDefinition[]).push(definition);
+  }
+}
+
 export function registerAircraftFleet(
   families: readonly AircraftFamilyDefinition[],
   catalog: readonly AircraftDefinition[],
