@@ -1001,7 +1001,7 @@ export function applyAircraftRig(
     } else {
       moved = poseHinge(part.node, part.rest, part.axis, angle, angle);
     }
-    if (moved && part.pivot) {
+    if (moved && part.pivot && part.node.rotationQuaternion) {
       const pivot = part.pivot;
       pivot.scaledLocal.rotateByQuaternionToRef(part.node.rotationQuaternion, pivot.posedOffset);
       part.node.position.copyFrom(pivot.restPosition).addInPlace(pivot.restOffset).subtractInPlace(pivot.posedOffset);
