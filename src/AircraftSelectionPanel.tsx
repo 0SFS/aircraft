@@ -1,4 +1,5 @@
 import { HelpTip, Resettable } from "foss-earth/shell";
+import { createIssueReportView } from "@foss-earth/ui/diagnostics";
 import { Plane } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
@@ -7,7 +8,6 @@ import {
   getAircraftFamilyForAircraft,
   normalizeAircraftSelection,
   type AircraftFamilyDefinition,
-  type AircraftFamilyId,
   type AircraftId,
   type AircraftLodId,
   type AircraftModelCredit,
@@ -40,7 +40,7 @@ interface AircraftSelectionPanelProps {
   snapshot: AircraftSelectionPanelSnapshot;
   selection: AircraftSelection;
   onSelectionChange(selection: AircraftSelection): void;
-  onFamilyChange(familyId: AircraftFamilyId): void;
+  onFamilyChange(familyId: string): void;
   /** Resolves when the complete aircraft is ready, or returns its error report. */
   onApply(selection: AircraftSelection): string | null | Promise<string | null>;
   switching?: boolean;
@@ -76,9 +76,10 @@ function FamilyThumbnail({ family }: { family: AircraftFamilyDefinition }) {
 }
 
 /** Native modal dialogs keep keyboard focus in the warning, above the aircraft window. */
-function AircraftDialog({ titleId, onDismiss, children }: {
+function AircraftDialog({ titleId, onDismiss, wide = false, children }: {
   titleId: string;
   onDismiss(): void;
+  wide?: boolean;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -94,7 +95,7 @@ function AircraftDialog({ titleId, onDismiss, children }: {
     <dialog className="flight-panel__aircraft-dialog" ref={ref} aria-labelledby={titleId}
       onKeyDown={event => event.stopPropagation()}
       onCancel={event => { event.preventDefault(); onDismiss(); }}>
-      <div className="flight-panel__aircraft-dialog-content">{children}</div>
+      <div className={`flight-panel__aircraft-dialog-content${wide ? " is-wide" : ""}`}>{children}</div>
     </dialog>
   );
 }
@@ -114,6 +115,13 @@ export function AircraftSelectionPanel({
   const [dontShowAgain, setDontShowAgain] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const reportHost = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!applyError || !reportHost.current) return;
+    const viewer = createIssueReportView(applyError, { document: reportHost.current.ownerDocument });
+    reportHost.current.append(viewer.element);
+    return () => viewer.destroy();
+  }, [applyError]);
   const activeSelection = normalizeAircraftSelection(snapshot);
   const activeDefinition = getAircraftDefinition(snapshot.aircraftId);
   const family = getAircraftFamilyForAircraft(snapshot.aircraftId);
@@ -310,12 +318,12 @@ export function AircraftSelectionPanel({
       ) : null}
 
       {applyError ? (
-        <AircraftDialog titleId={`${id}-error-title`} onDismiss={() => setApplyError(null)}>
+        <AircraftDialog titleId={`${id}-error-title`} wide onDismiss={() => setApplyError(null)}>
           <h2 id={`${id}-error-title`}>Could not change aircraft</h2>
-          <p>The aircraft was not changed. Error report:</p>
-          <pre className="flight-panel__aircraft-error-report" tabIndex={0} aria-label="Aircraft change error report">{applyError}</pre>
+          <p>The aircraft was not changed. The report index names the failure and the line to read.</p>
+          <div ref={reportHost} />
           <div className="flight-panel__aircraft-dialog-actions">
-            <button className="flight-panel__command" type="button" autoFocus onClick={() => setApplyError(null)}>Close</button>
+            <button className="flight-panel__command" type="button" onClick={() => setApplyError(null)}>Close</button>
           </div>
         </AircraftDialog>
       ) : null}

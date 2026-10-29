@@ -164,8 +164,9 @@ try {
     await clickText("Confirm");
     await waitForExpression(chrome, sessionId, "window.__aircraftFixture.applied.length===2");
     await evaluate(chrome, sessionId, "window.__aircraftFixture.finish('Aircraft: f-35b\\nModel request failed: HTTP 404\\nFlight remains paused.')");
-    await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('.flight-panel__aircraft-error-report'))");
-    const error = await evaluate(chrome, sessionId, `({...${dialogGeometry},report:document.querySelector('.flight-panel__aircraft-error-report').textContent,oldAircraftRetained:document.querySelector('.flight-panel__aircraft-current strong').textContent==='Cessna 172 Skyhawk'})`);
+    await waitForExpression(chrome, sessionId, "Boolean(document.querySelector('.foss-earth-issue-report__text'))");
+    await evaluate(chrome, sessionId, "document.querySelector('[role=tab][data-file=\"failure.txt\"]').click()");
+    const error = await evaluate(chrome, sessionId, `({...${dialogGeometry},report:document.querySelector('.foss-earth-issue-report__text').textContent,oldAircraftRetained:document.querySelector('.flight-panel__aircraft-current strong').textContent==='Cessna 172 Skyhawk'})`);
     screenshots.push(await shot("error"));
     await clickText("Close");
     await openGallery();

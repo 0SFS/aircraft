@@ -698,6 +698,34 @@ describe("propeller disc", () => {
     expect(maxReadableRadPerSec(0, 1 / 60)).toBe(Number.POSITIVE_INFINITY);
   });
 
+  it("keeps a 3D sweep by default and switches the optional flat disc while paused", () => {
+    const t = discRig();
+    const state = { ...NEUTRAL_CONTROL_SURFACES, propellerRadPerSec: RPM(2300) };
+    for (let i = 0; i < 40; i += 1) applyAircraftRig(t.rig, state, 1 / 60);
+    expect(t.rig.discVisible).toBe(true);
+    expect(t.node.isEnabled()).toBe(false);
+    expect(t.rig.propeller!.disc!.isEnabled()).toBe(true);
+    expect(t.rig.propeller!.flatDisc).toBeNull();
+    const angle = t.rig.propellerAngleRad;
+    applyAircraftRig(t.rig, state, 0, { simulationHeld: true, propellerDiscs: true });
+    expect(t.rig.propeller!.disc!.isEnabled()).toBe(false);
+    expect(t.rig.propeller!.flatDisc!.isEnabled()).toBe(true);
+    applyAircraftRig(t.rig, state, 0, { simulationHeld: true, propellerDiscs: false });
+    expect(t.rig.discVisible).toBe(true);
+    expect(t.rig.propeller!.disc!.isEnabled()).toBe(true);
+    expect(t.rig.propeller!.flatDisc!.isEnabled()).toBe(false);
+    expect(t.rig.propellerAngleRad).toBe(angle);
+    applyAircraftRig(t.rig, { ...state, propellerRadPerSec: RPM(400) }, 1 / 60);
+    expect(t.rig.discVisible).toBe(false);
+    expect(t.node.isEnabled()).toBe(true);
+    expect(t.rig.propeller!.disc!.isEnabled()).toBe(false);
+    expect(t.rig.propeller!.flatDisc!.isEnabled()).toBe(false);
+    const flat = t.rig.propeller!.flatDisc!;
+    disposeAircraftRig(t.rig);
+    expect(flat.isDisposed()).toBe(true);
+    t.scene.dispose(); t.engine.dispose();
+  });
+
   it("shows the blades at idle and the disc once they alias", () => {
     const t = discRig();
     const disc = t.rig.propeller!.disc!;
@@ -789,5 +817,88 @@ describe("baked swept disc", () => {
     disposeAircraftRig(rig);
     expect(baked.isDisposed()).toBe(false);
     s.scene.dispose(); s.engine.dispose();
+  });
+});
+
+describe("reused hinge poses", () => {
+  const F35B_NAMES = [
+    "leftElevator", "rightElevator", "leftFlaperon", "rightFlaperon", "leftRudder", "rightRudder",
+    "leftGear", "rightGear", "noseGear", "leftPiston", "rightPiston", "nosePiston",
+    "leftDoor", "rightDoor", "leftNoseDoor", "rightNoseDoor",
+    "topLiftDoor", "leftLiftDoor", "rightLiftDoor", "leftEngineDoor", "rightEngineDoor",
+    "leftExhaustDoor", "rightExhaustDoor", "vtol",
+    "leftWheel", "rightWheel", "noseWheel",
+    ...Array.from({ length: 16 }, (_, index) => `feather.${String(index + 1).padStart(3, "0")}`),
+    "Propeller",
+  ];
+
+  function expectQuaternion(actual: Quaternion, expected: Quaternion): void {
+    expect(actual.x).toBe(expected.x);
+    expect(actual.y).toBe(expected.y);
+    expect(actual.z).toBe(expected.z);
+    expect(actual.w).toBe(expected.w);
+  }
+
+  it("matches the allocating hinge product and skips a repeated pose", () => {
+    const s = scene();
+    const rig = bindAircraftRig(F35B_NAMES.map((name) => new TransformNode(name, s.scene)), { aircraftId: "f-35b" });
+    const state = {
+      ...NEUTRAL_CONTROL_SURFACES,
+      elevatorRad: 0.2,
+      aileronLeftRad: -0.15,
+      aileronRightRad: 0.15,
+      rudderRad: 0.05,
+      flapRad: 0.1,
+      gearDownNorm: 0.35,
+      stovlPositionNorm: 0.2,
+      nozzlePitchRad: 0.4,
+      nozzleYawRad: -0.25,
+      nozzlePositionNorm: 0.3,
+      onGround: true,
+      groundSpeedMps: 12,
+    };
+    applyAircraftRig(rig, state, 1 / 60);
+
+    for (const part of rig.parts) {
+      const angle = state[part.key] * part.sign + (part.addKey ? state[part.addKey] : 0);
+      expectQuaternion(part.node.rotationQuaternion!, part.rest.multiply(Quaternion.RotationAxis(part.axis, angle)));
+    }
+    for (const leg of rig.gear) {
+      const travel = 1 - state.gearDownNorm;
+      const part = Math.min(1, Math.max(0, (travel - leg.window[0]) / (leg.window[1] - leg.window[0])));
+      let expected = leg.rest;
+      if (leg.rotations) {
+        for (const step of leg.rotations) expected = expected.multiply(Quaternion.RotationAxis(step.axis, part * step.rad));
+      } else {
+        expected = leg.rest.multiply(Quaternion.RotationAxis(leg.axis, part * leg.rad * leg.sign));
+      }
+      expectQuaternion(leg.node.rotationQuaternion!, expected);
+    }
+    const nozzle = rig.stovl.find((part) => part.nozzle)!;
+    expectQuaternion(
+      nozzle.node.rotationQuaternion!,
+      nozzle.rest.multiply(Quaternion.RotationAxis(new Vector3(1, 0, 0), state.nozzlePitchRad))
+        .multiply(Quaternion.RotationAxis(new Vector3(0, 1, 0), -state.nozzleYawRad)),
+    );
+    const door = rig.stovl.find((part) => part.pivot)!;
+    const before = door.node.position.clone();
+    const held = rig.parts.map((part) => part.node.rotationQuaternion);
+    const rotationAxis = vi.spyOn(Quaternion, "RotationAxis");
+    applyAircraftRig(rig, state, 0, { simulationHeld: true });
+    expect(rotationAxis).not.toHaveBeenCalled();
+    rig.parts.forEach((part, index) => expect(part.node.rotationQuaternion).toBe(held[index]));
+    expect(door.node.position.x).toBe(before.x);
+    expect(door.node.position.y).toBe(before.y);
+    expect(door.node.position.z).toBe(before.z);
+    rotationAxis.mockRestore();
+
+    applyAircraftRig(rig, { ...state, elevatorRad: -0.45 }, 0, { simulationHeld: true });
+    const elevator = rig.parts.find((part) => part.key === "elevatorRad" && part.sign === 1)!;
+    expectQuaternion(
+      elevator.node.rotationQuaternion!,
+      elevator.rest.multiply(Quaternion.RotationAxis(elevator.axis, -0.45)),
+    );
+    s.scene.dispose();
+    s.engine.dispose();
   });
 });

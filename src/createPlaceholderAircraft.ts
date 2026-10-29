@@ -9,6 +9,7 @@ import {
   Vector3,
   type AbstractMesh,
 } from "@babylonjs/core";
+import { MOMENTUM_PITCH_LIMIT } from "./cameraFollow";
 import { aircraftParameterDefaults, type AircraftParameters } from "./settings";
 
 export type FlightViewMode = "first" | "third";
@@ -28,9 +29,9 @@ export interface AircraftEntity {
   /**
    * What the chase camera orbits in. `null` rides on the aircraft and turns
    * with every rotation it makes (the original). A world rotation — say,
-   * heading alone — keeps the camera on the aircraft but out of the rotations
-   * left out of it, so the horizon stays level through a roll. Call it each
-   * frame after the aircraft moves.
+   * heading and travel pitch — follows that direction with a planet-level
+   * horizon. Orbit pitch is combined before the ±85° limit, and orbit yaw
+   * stays about planet up. Call it each frame after the aircraft moves.
    */
   setChaseFrame(rotation: Quaternion | null): void;
   /** Both flight cameras' vertical field of view, in degrees. */
@@ -139,9 +140,17 @@ export function createPlaceholderAircraft(
   const zoomLimits = (): { min: number; max: number } => options.chaseZoomLimits?.() ?? parameters.get("osfs.camera.chaseZoomLimits");
   const initialLimits = zoomLimits();
   let chaseDistance = Math.max(initialLimits.min, Math.min(initialLimits.max, options.chaseDistanceMeters ?? chaseOffset.length()));
+  let followPitch = 0;
+  let followsWorldFrame = false;
+  const followForward = new Vector3();
   const updateChaseCamera = (): void => {
-    const horizontal = chaseDistance * Math.cos(chasePitch);
-    thirdPersonCamera.position.set(Math.sin(chaseYaw) * horizontal, Math.sin(chasePitch) * chaseDistance, -Math.cos(chaseYaw) * horizontal);
+    // Orbit in a level heading frame. Tilting the parent would bank the view
+    // when orbiting sideways, and pitch + orbit could carry it past a pole.
+    const pitch = followsWorldFrame
+      ? Math.max(-MOMENTUM_PITCH_LIMIT, Math.min(MOMENTUM_PITCH_LIMIT, chasePitch - followPitch))
+      : chasePitch;
+    const horizontal = chaseDistance * Math.cos(pitch);
+    thirdPersonCamera.position.set(Math.sin(chaseYaw) * horizontal, Math.sin(pitch) * chaseDistance, -Math.cos(chaseYaw) * horizontal);
     thirdPersonCamera.position.addInPlace(chaseTarget);
     thirdPersonCamera.setTarget(chaseTarget);
   };
@@ -182,13 +191,18 @@ export function createPlaceholderAircraft(
       updateChaseCamera();
     },
     setChaseFrame(rotation): void {
+      followsWorldFrame = rotation !== null;
       if (rotation === null) {
         if (thirdPersonCamera.parent !== root) thirdPersonCamera.parent = root;
-        return;
+        followPitch = 0;
+      } else {
+        followForward.set(0, 0, 1).applyRotationQuaternionInPlace(rotation);
+        followPitch = Math.atan2(followForward.y, Math.hypot(followForward.x, followForward.z));
+        chasePivot.position.copyFrom(root.getAbsolutePosition());
+        Quaternion.RotationYawPitchRollToRef(Math.atan2(followForward.x, followForward.z), 0, 0, chasePivot.rotationQuaternion!);
+        if (thirdPersonCamera.parent !== chasePivot) thirdPersonCamera.parent = chasePivot;
       }
-      chasePivot.position.copyFrom(root.getAbsolutePosition());
-      chasePivot.rotationQuaternion!.copyFrom(rotation);
-      if (thirdPersonCamera.parent !== chasePivot) thirdPersonCamera.parent = chasePivot;
+      updateChaseCamera();
     },
     setFieldOfView(degrees): void {
       firstPersonCamera.fov = degrees * RADIANS_PER_DEGREE;

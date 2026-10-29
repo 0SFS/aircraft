@@ -6,7 +6,10 @@ import {
   type AircraftId,
   isAircraftFamilyId,
   isAircraftId,
+  registerAircraftFamilyId,
   registerAircraftId,
+  unregisterAircraftFamilyId,
+  unregisterAircraftId,
 } from "./aircraftIds";
 
 export { AIRCRAFT_FAMILY_IDS, AIRCRAFT_IDS, isAircraftFamilyId, isAircraftId };
@@ -48,7 +51,7 @@ export interface AircraftModelCredit {
 }
 
 export interface AircraftFamilyDefinition {
-  id: AircraftFamilyId;
+  id: string;
   label: string;
   summary: string;
   thumbnail: {
@@ -144,7 +147,25 @@ export interface AircraftExhaustInstallation {
 
 export interface AircraftDefinition {
   id: AircraftId;
-  familyId: AircraftFamilyId;
+  familyId: string;
+  /** Empty-path LODs draw through the lazy mesh hook; other LODs load glTF. */
+  procedural?: "drone";
+  /** Authored rotor pivots, in their own local frames. Speed is visual until a motor FDM exists. */
+  rotors?: readonly { node: string; axis: readonly [number, number, number]; radiusMeters: number; blades: number; direction: number }[];
+  gimbal?: { baseNode: string; yawNode?: string; rollNode?: string; pitchNode: string };
+  /** Aircraft-specific input semantics and keyboard defaults; pilot overrides persist. */
+  controls?: {
+    vertical?: "throttle" | "climb-rate";
+    keyboard?: Partial<import("@0sfs/controls/keyboardAxisBindings").KeyboardAxisBindings>;
+  };
+  /** Aircraft-sized camera defaults; explicit pilot settings still take precedence. */
+  camera?: {
+    follow?: import("./cameraFollow").CameraFollowMode;
+    chaseDistanceMeters?: number;
+    chaseHeightMeters?: number;
+    chaseZoomLimits?: { min: number; max: number };
+    nearClipMeters?: number;
+  };
   label: string;
   summary: string;
   /** Yaw applied to the imported glTF so its -Z nose faces the sim's +Z nose. */
@@ -201,6 +222,24 @@ export const AIRCRAFT_FAMILIES: readonly AircraftFamilyDefinition[] = [];
 /** Every selectable aircraft. Filled by `registerAircraftFleet`. */
 export const AIRCRAFT_CATALOG: readonly AircraftDefinition[] = [];
 
+let catalogRevision = 0;
+const catalogListeners = new Set<() => void>();
+
+/** Bumps when a mod adds or removes a family. The gallery listens. */
+export function aircraftCatalogRevision(): number {
+  return catalogRevision;
+}
+
+export function subscribeAircraftCatalog(listener: () => void): () => void {
+  catalogListeners.add(listener);
+  return () => { catalogListeners.delete(listener); };
+}
+
+function bumpAircraftCatalog(): void {
+  catalogRevision += 1;
+  for (const listener of catalogListeners) listener();
+}
+
 /**
  * Supplies the fleet: the families and aircraft the host assembles from its
  * aircraft packages, in the order the gallery offers them. Called once, before
@@ -211,14 +250,44 @@ export function registerAircraftMod(
   family: AircraftFamilyDefinition,
   catalog: readonly AircraftDefinition[],
 ): void {
-  if (!AIRCRAFT_FAMILIES.some(item => item.id === family.id)) {
-    (AIRCRAFT_FAMILIES as AircraftFamilyDefinition[]).push(family);
+  registerAircraftFamilyId(family.id);
+  const existing = AIRCRAFT_FAMILIES.find(item => item.id === family.id);
+  if (!existing) {
+    (AIRCRAFT_FAMILIES as AircraftFamilyDefinition[]).push({ ...family, variants: [...family.variants] });
+  } else {
+    const variants = [...existing.variants];
+    for (const variant of family.variants) {
+      if (!variants.some(item => item.aircraftId === variant.aircraftId)) variants.push(variant);
+    }
+    (existing as unknown as { variants: AircraftFamilyVariantDefinition[] }).variants = variants;
   }
   for (const definition of catalog) {
     if (AIRCRAFT_CATALOG.some(item => item.id === definition.id)) continue;
     registerAircraftId(definition.id);
     (AIRCRAFT_CATALOG as AircraftDefinition[]).push(definition);
   }
+  bumpAircraftCatalog();
+}
+
+/** Drops a mod's aircraft. Built-in ids are left in place. */
+export function unregisterAircraftMod(familyId: string, aircraftIds: readonly string[]): void {
+  for (const id of aircraftIds) {
+    unregisterAircraftId(id);
+    const index = AIRCRAFT_CATALOG.findIndex(item => item.id === id);
+    if (index >= 0) (AIRCRAFT_CATALOG as AircraftDefinition[]).splice(index, 1);
+  }
+  const family = AIRCRAFT_FAMILIES.find(item => item.id === familyId);
+  if (family) {
+    (family as unknown as { variants: AircraftFamilyVariantDefinition[] }).variants = family.variants.filter(variant =>
+      !aircraftIds.includes(variant.aircraftId));
+  }
+  const remaining = AIRCRAFT_CATALOG.some(item => item.familyId === familyId);
+  if (!remaining) {
+    const index = AIRCRAFT_FAMILIES.findIndex(item => item.id === familyId);
+    if (index >= 0) (AIRCRAFT_FAMILIES as AircraftFamilyDefinition[]).splice(index, 1);
+    unregisterAircraftFamilyId(familyId);
+  }
+  bumpAircraftCatalog();
 }
 
 export function registerAircraftFleet(
@@ -234,7 +303,7 @@ export function getAircraftDefinition(id: AircraftId): AircraftDefinition {
   return AIRCRAFT_CATALOG.find((entry) => entry.id === id) ?? AIRCRAFT_CATALOG[0];
 }
 
-export function getAircraftFamily(id: AircraftFamilyId): AircraftFamilyDefinition {
+export function getAircraftFamily(id: string): AircraftFamilyDefinition {
   return AIRCRAFT_FAMILIES.find((family) => family.id === id) ?? AIRCRAFT_FAMILIES[0];
 }
 

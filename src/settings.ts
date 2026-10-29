@@ -52,6 +52,14 @@ export const AIRCRAFT_PARAMETERS_1 = [
 
 export const AIRCRAFT_PARAMETERS_2 = [
   {
+    id: "osfs.aircraft.propellerDiscs",
+    label: "Flat propeller discs",
+    description: "Use lower-cost flat discs at high RPM instead of the default semitransparent 3D swept propeller volumes. Slow propellers retain their individual 3D blades in either mode. This changes presentation only, never motor RPM or thrust.",
+    unit: "none", kind: "boolean", default: false,
+    defaultReason: "Preserve the three-dimensional swept blade shape at high RPM unless the pilot opts into flat discs.",
+    home: main(MODEL), appliesLive: true, source: "aircraft/src/aircraftAnimation.ts",
+  },
+  {
     id: "osfs.aircraft.lod",
     label: "Model detail",
     description: "Which of the aircraft's models is drawn; Auto picks one by the chase camera's distance.",
@@ -152,7 +160,7 @@ export const AIRCRAFT_PARAMETERS_5 = [
     unit: "m",
     kind: "number",
     step: 0.5,
-    bounds: within(4, 200),
+    bounds: within(0.1, 200),
     default: 14,
     defaultReason: "The original chase offset.",
     home: all(CAMERA),
@@ -181,7 +189,7 @@ export const AIRCRAFT_PARAMETERS_5 = [
     kind: "range",
     scale: "log2",
     step: 0.1,
-    bounds: within(2, 5_000),
+    bounds: within(0.05, 5_000),
     default: { min: 8, max: 500 },
     defaultReason: "The original limits.",
     home: all(CAMERA),

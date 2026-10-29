@@ -18,6 +18,7 @@ import {
 import { hiddenDepthOccludersReady, unwatchHiddenDepthOccluder, warmHiddenDepthOccluders, watchHiddenDepthOccluder } from "@0sfs/exhaust/engineExhaustDepth";
 import { whenMeshesReady } from "foss-earth/runtime";
 import { bindAircraftRig, disposeAircraftRig, type AircraftRig } from "./aircraftAnimation";
+import { droneMeshHook } from "./droneMeshHook";
 import {
   getAircraftDefinition,
   resolveLod,
@@ -136,6 +137,7 @@ export interface AircraftModelHandle {
 }
 
 function resolveAssetUrl(path: string): string {
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(path)) return path;
   const base = (import.meta.env?.BASE_URL ?? "/") as string;
   return `${base.endsWith("/") ? base : `${base}/`}${path}`;
 }
@@ -184,6 +186,7 @@ export function createAircraftModel(
   const requestRender = (): void => options.requestRender?.();
 
   let shown: LoadedModel | null = null;
+  let procedural: { key: string; dispose(): void } | null = null;
   let rig: AircraftRig | null = null;
   let pending: { key: string; controller: AbortController } | null = null;
   let disposed = false;
@@ -218,7 +221,9 @@ export function createAircraftModel(
 
   /** Takes the shown mesh away. The caller asks for the frame. */
   const clearShown = (): void => {
-    if (shown) options.onMeshRootsChange?.([]);
+    if (shown || procedural) options.onMeshRootsChange?.([]);
+    procedural?.dispose();
+    procedural = null;
     if (rig) disposeAircraftRig(rig);
     rig = null;
     if (shown) disposeModel(shown);
@@ -510,10 +515,28 @@ export function createAircraftModel(
     if (disposed) return;
     const definition = getAircraftDefinition(state.aircraftId);
     const lod = resolveLod(definition, state.lodId, getChaseDistance());
+    if (definition.procedural === "drone" && lod && !lod.path) {
+      const key = `${definition.id}:${lod.id}`;
+      if (procedural?.key === key) {
+        if (pending) {
+          cancelPending();
+          publish({ status: "ready", error: null, download: null });
+        }
+        return;
+      }
+      cancelPending();
+      clearShown();
+      const dispose = droneMeshHook()?.mount(root) ?? (() => {});
+      procedural = { key, dispose };
+      options.onMeshRootsChange?.(root.getChildTransformNodes(true));
+      publish({ activeLodId: lod.id, status: "ready", triangles: lod.triangles, error: null, download: null });
+      requestRender();
+      return;
+    }
 
     if (!lod) {
       cancelPending();
-      const hadModel = shown !== null;
+      const hadModel = shown !== null || procedural !== null;
       clearShown();
       publish({ activeLodId: null, status: "placeholder", triangles: null, error: null, download: null });
       if (hadModel) requestRender();

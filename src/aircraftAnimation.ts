@@ -1,10 +1,9 @@
+import { createPropellerDisc, createPropellerSweep, DISC_HYSTERESIS, maxReadableRadPerSec, smoothFrameSeconds, stepRotatingProp } from "@0sfs/rotating-prop";
+export { maxReadableRadPerSec } from "@0sfs/rotating-prop";
 import {
   AbstractMesh,
-  Color3,
   Mesh,
-  CreateDisc,
   Quaternion,
-  StandardMaterial,
   Texture,
   TransformNode,
   Vector3,
@@ -342,8 +341,10 @@ interface RollingWheel {
 interface Propeller {
   node: TransformNode;
   rest: Quaternion;
-  /** Stand-in shown once the blades turn too fast to read. */
+  /** Three-dimensional swept volume shown once the blades turn too fast to read. */
   disc: TransformNode | null;
+  /** Optional lower-cost flat representation, created only when selected. */
+  flatDisc: Mesh | null;
   /** True when the disc came from the mesh and must not be disposed here. */
   discFromMesh: boolean;
   blades: number;
@@ -391,30 +392,7 @@ export interface BindRigOptions {
   engineNozzle?: EngineNozzleRigDefinition;
 }
 
-/** Hysteresis, so a propeller sitting on the threshold does not flicker. */
-const DISC_HYSTERESIS = 0.8;
-const FRAME_SMOOTHING = 0.15;
 const DEFAULT_FRAME_SECONDS = 1 / 60;
-
-/**
- * Fastest the blades can turn and still be readable, in rad/s.
- *
- * The image repeats every `2*PI / blades`, and reading a repeating signal needs
- * two samples per repeat, so the blades may advance at most half a repeat per
- * frame. For a two-blade propeller at 60 fps that is 90 deg per frame, about
- * 900 rpm — below a Cessna's idle, so in practice the disc is shown almost
- * whenever the engine is running, which is also how a real propeller looks.
- */
-export function maxReadableRadPerSec(repeats: number, frameSeconds: number): number {
-  // `repeats` is how many times the image repeats in one turn, not how many
-  // parts there are: two blades repeat twice, one tyre stripe repeats once.
-  // The guard is < 1, not < 2 - a single stripe DOES alias, at half the rate a
-  // two-blade propeller does, and guarding at 2 quietly returned Infinity and
-  // made the wheel blur unreachable. Zero means no repeating image at all,
-  // which is a jet's propeller: nothing to alias, no limit.
-  if (repeats < 1 || frameSeconds <= 0) return Number.POSITIVE_INFINITY;
-  return Math.PI / repeats / frameSeconds;
-}
 
 function propellerRadius(node: TransformNode): number {
   const radius = nodeRadius(node);
@@ -430,31 +408,6 @@ function nodeRadius(node: TransformNode): number {
   // taking the max of Y and Z would read a propeller's chord. Y is common to
   // both, so pair it with whichever of X and Z is larger.
   return Math.max(extend.y, Math.min(extend.x, extend.z));
-}
-
-function buildPropellerDisc(node: TransformNode, scene: Scene): Mesh {
-  // The propeller turns about local Z, so a disc in the local XY plane — which
-  // is how CreateDisc is oriented — already lies in the propeller's plane.
-  const disc = CreateDisc(
-    "propeller-disc",
-    { radius: propellerRadius(node), tessellation: 24, sideOrientation: Mesh.DOUBLESIDE },
-    scene,
-  );
-  disc.parent = node.parent;
-  disc.position.copyFrom(node.position);
-  disc.rotationQuaternion = node.rotationQuaternion?.clone() ?? Quaternion.Identity();
-  disc.isPickable = false;
-
-  const material = new StandardMaterial("propeller-disc-mat", scene);
-  material.diffuseColor = Color3.Black();
-  material.specularColor = Color3.Black();
-  material.emissiveColor = new Color3(0.07, 0.08, 0.09);
-  material.disableLighting = true;
-  material.alpha = 0.28;
-  material.backFaceCulling = false;
-  disc.material = material;
-  disc.setEnabled(false);
-  return disc;
 }
 
 const SPAN_AXIS = new Vector3(1, 0, 0);
@@ -767,8 +720,8 @@ export function bindAircraftRig(
   if (propNode) bound.push("Propeller");
 
   const blades = options.propellerBlades ?? 0;
-  // A model can ship a solid swept from its own blade sections, which stays
-  // correct edge-on. Only fall back to a flat disc when it does not.
+  // Prefer the airframe's authored three-dimensional blade sweep. Other
+  // propellers derive a three-dimensional envelope from their own geometry.
   const baked = byName.get("Propeller_Disc") ?? null;
   if (baked) {
     baked.setEnabled(false);
@@ -776,7 +729,7 @@ export function bindAircraftRig(
   }
   const disc = baked
     ?? (propNode && options.scene && blades >= 2
-      ? buildPropellerDisc(propNode, options.scene)
+      ? createPropellerSweep(propNode, options.scene, propellerRadius(propNode))
       : null);
 
   return {
@@ -790,7 +743,7 @@ export function bindAircraftRig(
     nozzleArea,
     engineNozzle: options.engineNozzle ? bindEngineNozzleRig(nodes, options.engineNozzle) : undefined,
     propeller: propNode
-      ? { node: propNode, rest: restRotation(propNode), disc, discFromMesh: baked !== null, blades }
+      ? { node: propNode, rest: restRotation(propNode), disc, flatDisc: null, discFromMesh: baked !== null, blades }
       : null,
     propellerAngleRad: 0,
     frameSeconds: DEFAULT_FRAME_SECONDS,
@@ -819,12 +772,122 @@ function tyreAtlases(node: TransformNode): Texture[] {
   return found;
 }
 
-/** Free only a disc this module built; a baked one belongs to the AssetContainer. */
+/** Free generated representations; an authored sweep belongs to the AssetContainer. */
 export function disposeAircraftRig(rig: AircraftRig): void {
   const propeller = rig.propeller;
-  if (!propeller?.disc || propeller.discFromMesh) return;
-  if (propeller.disc instanceof Mesh) propeller.disc.material?.dispose();
-  propeller.disc.dispose();
+  if (!propeller) return;
+  propeller.flatDisc?.material?.dispose();
+  propeller.flatDisc?.dispose();
+  if (propeller.disc && !propeller.discFromMesh) {
+    if (propeller.disc instanceof Mesh) propeller.disc.material?.dispose();
+    propeller.disc.dispose();
+  }
+}
+
+/**
+ * One reused hinge quaternion per node. A steady pose keeps that object on the
+ * node and does not mark it dirty; a new angle is written into it.
+ */
+interface HingePose {
+  posed: Quaternion;
+  keyA: number;
+  keyB: number;
+  written: boolean;
+}
+
+const hingePoses = new WeakMap<TransformNode, HingePose>();
+const hingeAxis = new Quaternion();
+const hingeChain = new Quaternion();
+
+function hingePose(node: TransformNode): HingePose {
+  let pose = hingePoses.get(node);
+  if (!pose) {
+    pose = { posed: new Quaternion(), keyA: 0, keyB: 0, written: false };
+    hingePoses.set(node, pose);
+  }
+  return pose;
+}
+
+function poseUnchanged(node: TransformNode, keyA: number, keyB: number): boolean {
+  const pose = hingePoses.get(node);
+  return pose?.written === true && pose.keyA === keyA && pose.keyB === keyB
+    && node.rotationQuaternion === pose.posed;
+}
+
+/** Writes `rest * RotationAxis(axis, angle)` when that pose is not already on the node. */
+function poseHinge(
+  node: TransformNode,
+  rest: Quaternion,
+  axis: Vector3,
+  angle: number,
+  keyA: number,
+  keyB = 0,
+): boolean {
+  if (poseUnchanged(node, keyA, keyB)) return false;
+  const pose = hingePose(node);
+  const posed = pose.posed;
+  const same = node.rotationQuaternion === posed;
+  const x = posed.x, y = posed.y, z = posed.z, w = posed.w;
+  Quaternion.RotationAxisToRef(axis, angle, hingeAxis);
+  rest.multiplyToRef(hingeAxis, posed);
+  pose.keyA = keyA;
+  pose.keyB = keyB;
+  pose.written = true;
+  if (!same || posed.x !== x || posed.y !== y || posed.z !== z || posed.w !== w) node.rotationQuaternion = posed;
+  return true;
+}
+
+/** `rest`, then each rotation in order, for a linkage whose travel fraction is `part`. */
+function poseSequence(
+  node: TransformNode,
+  rest: Quaternion,
+  rotations: readonly { axis: Vector3; rad: number }[],
+  part: number,
+): boolean {
+  if (poseUnchanged(node, part, rotations.length)) return false;
+  const pose = hingePose(node);
+  const posed = pose.posed;
+  const same = node.rotationQuaternion === posed;
+  const x = posed.x, y = posed.y, z = posed.z, w = posed.w;
+  let source: Quaternion = rest;
+  let target: Quaternion = posed;
+  for (let i = 0; i < rotations.length; i++) {
+    Quaternion.RotationAxisToRef(rotations[i].axis, part * rotations[i].rad, hingeAxis);
+    source.multiplyToRef(hingeAxis, target);
+    if (i + 1 < rotations.length) {
+      source = target;
+      target = target === posed ? hingeChain : posed;
+    }
+  }
+  if (target !== posed) posed.copyFrom(target);
+  pose.keyA = part;
+  pose.keyB = rotations.length;
+  pose.written = true;
+  if (!same || posed.x !== x || posed.y !== y || posed.z !== z || posed.w !== w) node.rotationQuaternion = posed;
+  return true;
+}
+
+/** Pitch about span, then yaw about the vertical, matching the previous multiply order. */
+function posePitchYaw(
+  node: TransformNode,
+  rest: Quaternion,
+  pitch: number,
+  yaw: number,
+): boolean {
+  if (poseUnchanged(node, pitch, yaw)) return false;
+  const pose = hingePose(node);
+  const posed = pose.posed;
+  const same = node.rotationQuaternion === posed;
+  const x = posed.x, y = posed.y, z = posed.z, w = posed.w;
+  Quaternion.RotationAxisToRef(SPAN_AXIS, pitch, hingeAxis);
+  rest.multiplyToRef(hingeAxis, hingeChain);
+  Quaternion.RotationAxisToRef(VERTICAL_AXIS, -yaw, hingeAxis);
+  hingeChain.multiplyToRef(hingeAxis, posed);
+  pose.keyA = pitch;
+  pose.keyB = yaw;
+  pose.written = true;
+  if (!same || posed.x !== x || posed.y !== y || posed.z !== z || posed.w !== w) node.rotationQuaternion = posed;
+  return true;
 }
 
 /**
@@ -838,17 +901,8 @@ function applyGear(rig: AircraftRig, position: number): void {
   for (const leg of rig.gear) {
     const [from, to] = leg.window;
     const part = Math.min(1, Math.max(0, (travel - from) / (to - from)));
-    if (leg.rotations) {
-      let rotation = leg.rest;
-      for (const step of leg.rotations) {
-        rotation = rotation.multiply(Quaternion.RotationAxis(step.axis, part * step.rad));
-      }
-      leg.node.rotationQuaternion = rotation;
-    } else {
-      leg.node.rotationQuaternion = leg.rest.multiply(
-        Quaternion.RotationAxis(leg.axis, part * leg.rad * leg.sign),
-      );
-    }
+    if (leg.rotations) poseSequence(leg.node, leg.rest, leg.rotations, part);
+    else poseHinge(leg.node, leg.rest, leg.axis, part * leg.rad * leg.sign, part);
   }
 }
 
@@ -883,9 +937,7 @@ function applyWheels(
       % (2 * Math.PI);
   }
   for (const wheel of rig.wheels) {
-    wheel.node.rotationQuaternion = wheel.rest.multiply(
-      Quaternion.RotationAxis(SPAN_AXIS, rig.wheelAngleRad),
-    );
+    poseHinge(wheel.node, wheel.rest, SPAN_AXIS, rig.wheelAngleRad, rig.wheelAngleRad);
   }
 
   const limit = maxReadableRadPerSec(TYRE_STRIPE_REPEATS, rig.frameSeconds);
@@ -907,6 +959,8 @@ export interface ApplyRigOptions {
    * gear transit hold, and only the frame interval is measured.
    */
   simulationHeld?: boolean;
+  /** Opt-in flat representation; false retains the three-dimensional swept volume. */
+  propellerDiscs?: boolean;
 }
 
 export function applyAircraftRig(
@@ -918,7 +972,7 @@ export function applyAircraftRig(
   const held = options.simulationHeld === true;
   for (const part of rig.parts) {
     const angle = state[part.key] * part.sign + (part.addKey ? state[part.addKey] : 0);
-    part.node.rotationQuaternion = part.rest.multiply(Quaternion.RotationAxis(part.axis, angle));
+    poseHinge(part.node, part.rest, part.axis, angle, angle);
   }
 
   // The display's frame interval sets the alias limit for EVERYTHING that
@@ -926,7 +980,7 @@ export function applyAircraftRig(
   // live inside the propeller branch, and a jet's tyres were judged against a
   // hard-coded 60 fps whatever the display was doing.
   if (Number.isFinite(deltaSeconds) && deltaSeconds > 0) {
-    rig.frameSeconds += (deltaSeconds - rig.frameSeconds) * FRAME_SMOOTHING;
+    rig.frameSeconds = smoothFrameSeconds(rig.frameSeconds, deltaSeconds);
   }
 
   applyGear(rig, state.gearDownNorm);
@@ -936,18 +990,18 @@ export function applyAircraftRig(
   for (const part of rig.stovl) {
     const travel = part.window ? Math.max(0, Math.min(1, (conversion - part.window[0]) / (part.window[1] - part.window[0]))) : conversion;
     const angle = travel * part.rad * part.sign;
+    let moved: boolean;
     if (part.nozzle) {
       const pitch = Number.isFinite(state.nozzlePitchRad) ? state.nozzlePitchRad! : angle;
       const yaw = Number.isFinite(state.nozzleYawRad) ? state.nozzleYawRad! : 0;
       // Yaw is local to the pitched nozzle, so lateral aim remains visible at
       // full conversion. Native JSBSim Euler yaw can jump to 90 degrees near
       // vertical; the physical FCS angles preserve the actual nozzle vector.
-      part.node.rotationQuaternion = part.rest.multiply(Quaternion.RotationAxis(SPAN_AXIS, pitch))
-        .multiply(Quaternion.RotationAxis(VERTICAL_AXIS, -yaw));
+      moved = posePitchYaw(part.node, part.rest, pitch, yaw);
     } else {
-      part.node.rotationQuaternion = part.rest.multiply(Quaternion.RotationAxis(part.axis, angle));
+      moved = poseHinge(part.node, part.rest, part.axis, angle, angle);
     }
-    if (part.pivot) {
+    if (moved && part.pivot) {
       const pivot = part.pivot;
       pivot.scaledLocal.rotateByQuaternionToRef(part.node.rotationQuaternion, pivot.posedOffset);
       part.node.position.copyFrom(pivot.restPosition).addInPlace(pivot.restOffset).subtractInPlace(pivot.posedOffset);
@@ -957,7 +1011,7 @@ export function applyAircraftRig(
     const aperture = Math.min(1, Math.max(0, state.nozzlePositionNorm!));
     for (const petal of rig.nozzleArea) {
       const angle = petal.closedAngleRad + aperture * (petal.openAngleRad - petal.closedAngleRad);
-      petal.node.rotationQuaternion = petal.rest.multiply(Quaternion.RotationAxis(petal.axis, angle));
+      poseHinge(petal.node, petal.rest, petal.axis, angle, angle);
     }
   }
   // Missing telemetry leaves the authored/last observed pose; no display-time
@@ -968,26 +1022,20 @@ export function applyAircraftRig(
   const propeller = rig.propeller;
   if (!propeller) return;
 
-  if (!held && Number.isFinite(deltaSeconds) && deltaSeconds > 0) {
-    // A Lycoming turns clockwise seen from the cockpit. Looking forward is
-    // looking down -Z, and a positive rotation about +Z reads anticlockwise
-    // from there, so the angle decreases.
-    rig.propellerAngleRad -= state.propellerRadPerSec * deltaSeconds;
-    rig.propellerAngleRad %= 2 * Math.PI;
-  }
-
+  const motion = stepRotatingProp({ angleRad: rig.propellerAngleRad, blurred: rig.discVisible },
+    -state.propellerRadPerSec, deltaSeconds, rig.frameSeconds, propeller.blades, held);
+  rig.propellerAngleRad = motion.angleRad;
   if (propeller.disc) {
-    const limit = maxReadableRadPerSec(propeller.blades, rig.frameSeconds);
-    const rate = Math.abs(state.propellerRadPerSec);
-    // Once the blades alias there is nothing to be gained by drawing them, so
-    // swap in the disc rather than showing a strobing propeller.
-    rig.discVisible = rig.discVisible ? rate > limit * DISC_HYSTERESIS : rate > limit;
-    propeller.disc.setEnabled(rig.discVisible);
+    rig.discVisible = motion.blurred;
+    if (rig.discVisible && options.propellerDiscs && !propeller.flatDisc) {
+      propeller.flatDisc = createPropellerDisc(propeller.node, propeller.node.getScene(), propellerRadius(propeller.node));
+    }
+    const flat = rig.discVisible && options.propellerDiscs === true;
+    propeller.disc.setEnabled(rig.discVisible && !flat);
+    propeller.flatDisc?.setEnabled(flat);
     propeller.node.setEnabled(!rig.discVisible);
     if (rig.discVisible) return;
   }
 
-  propeller.node.rotationQuaternion = propeller.rest.multiply(
-    Quaternion.RotationAxis(THRUST_AXIS, rig.propellerAngleRad),
-  );
+  poseHinge(propeller.node, propeller.rest, THRUST_AXIS, rig.propellerAngleRad, rig.propellerAngleRad);
 }

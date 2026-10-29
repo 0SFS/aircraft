@@ -38,6 +38,10 @@
       "source": "./src/createAircraftLights.ts",
       "default": "./src/createAircraftLights.ts"
     },
+    "./droneMeshHook": {
+      "source": "./src/droneMeshHook.ts",
+      "default": "./src/droneMeshHook.ts"
+    },
     "./createAircraftModel": {
       "source": "./src/createAircraftModel.ts",
       "default": "./src/createAircraftModel.ts"
@@ -50,9 +54,14 @@
       "source": "./src/settings.ts",
       "default": "./src/settings.ts"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cameraFollow": {
+      "source": "./src/cameraFollow.ts",
+      "default": "./src/cameraFollow.ts"
+    }
   },
   "peerDependencies": {
+    "@foss-earth/ui": "0.1.0",
     "@0sfs/engines": "0.1.0",
     "@0sfs/exhaust": "0.1.0",
     "@babylonjs/core": "8.56.2",
@@ -60,9 +69,14 @@
     "@felipegalind0/jsbsim": "1.2.4-fork.21",
     "foss-earth": "0.1.0",
     "lucide-react": "1.41.0",
-    "react": "19.2.6"
+    "react": "19.2.6",
+    "@0sfs/rotating-prop": "0.1.0",
+    "@0sfs/controls": "0.1.0"
   },
   "peerDependenciesMeta": {
+    "@foss-earth/ui": {
+      "optional": true
+    },
     "@0sfs/engines": {
       "optional": true
     },
@@ -85,6 +99,9 @@
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "@0sfs/controls": {
       "optional": true
     }
   },
