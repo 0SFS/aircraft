@@ -137,6 +137,20 @@ export const AIRCRAFT_PARAMETERS_3 = [
 export const AIRCRAFT_PARAMETERS_4 = [
   // Aircraft → Camera.
   {
+    id: "osfs.camera.yawSpringTime",
+    label: "Yaw spring time",
+    description: "In Yaw mode, the spring's time constant for following aircraft heading without bounce. The default settles a stationary heading change by about 95% in 0.57 s. Zero follows heading immediately.",
+    unit: "s",
+    kind: "number",
+    step: 0.01,
+    bounds: within(0, 1),
+    default: 0.12,
+    defaultReason: "A short lag softens heading changes while keeping the camera close behind a turning aircraft.",
+    home: all(CAMERA),
+    appliesLive: true,
+    source: "aircraft/src/cameraFollow.ts",
+  },
+  {
     id: "osfs.camera.orbitPitchLimits",
     label: "Orbit pitch limits",
     description: "How far below and above the aircraft the chase camera may orbit.",

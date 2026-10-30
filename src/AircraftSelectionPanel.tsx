@@ -14,6 +14,7 @@ import {
   type AircraftSelection,
 } from "./aircraftCatalog";
 import type { AircraftModelStatus } from "./createAircraftModel";
+import { resolveAssetUrl } from "./resolveAssetUrl";
 
 /** The fields of the flight panel's snapshot that this panel reads. */
 export interface AircraftSelectionPanelSnapshot {
@@ -63,7 +64,7 @@ function FamilyThumbnail({ family }: { family: AircraftFamilyDefinition }) {
   return (
     <span className="flight-panel__aircraft-image">
       {path && !failed ? (
-        <img src={`${import.meta.env.BASE_URL}${path}`} alt="" width="640" height="400"
+        <img src={resolveAssetUrl(path)} alt="" width="640" height="400"
           decoding="async" onError={() => setFailed(true)} />
       ) : (
         <span className="flight-panel__aircraft-image-fallback">

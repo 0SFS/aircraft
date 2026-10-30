@@ -19,6 +19,7 @@ import { hiddenDepthOccludersReady, unwatchHiddenDepthOccluder, warmHiddenDepthO
 import { whenMeshesReady } from "foss-earth/runtime";
 import { bindAircraftRig, disposeAircraftRig, type AircraftRig } from "./aircraftAnimation";
 import { droneMeshHook } from "./droneMeshHook";
+import { resolveAssetUrl } from "./resolveAssetUrl";
 import {
   getAircraftDefinition,
   resolveLod,
@@ -134,12 +135,6 @@ export interface AircraftModelHandle {
   /** True when a fully stowed model has already warmed, or when nothing is stowed. */
   hiddenGearPrepared(): boolean;
   dispose(): void;
-}
-
-function resolveAssetUrl(path: string): string {
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(path)) return path;
-  const base = (import.meta.env?.BASE_URL ?? "/") as string;
-  return `${base.endsWith("/") ? base : `${base}/`}${path}`;
 }
 
 /** A mesh in the scene, under a node of its own that shows or hides all of it. */

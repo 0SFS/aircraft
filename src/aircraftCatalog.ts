@@ -55,7 +55,7 @@ export interface AircraftFamilyDefinition {
   label: string;
   summary: string;
   thumbnail: {
-    /** Static image path relative to the Vite base URL. */
+    /** Static image path relative to the Vite base URL, or a mod's absolute path or URL. */
     path: string;
     credit: AircraftModelCredit;
   };
@@ -145,6 +145,25 @@ export interface AircraftExhaustInstallation {
   afterburnerBurnedFuelFlowProperty?: string;
 }
 
+/** Controls the airframe supports, independent of its current actuator values. */
+export interface ControlCapabilities {
+  flaps: boolean;
+  pitchTrim: boolean;
+  rollTrim: boolean;
+  landingGear: boolean;
+}
+
+/** Older plane mods retain their controls; drone mods opt into movable hardware. */
+export function resolveControlCapabilities(aircraft: Pick<AircraftDefinition, "controls">, drone = false): ControlCapabilities {
+  const fallback = !drone;
+  return {
+    flaps: aircraft.controls?.flaps ?? fallback,
+    pitchTrim: aircraft.controls?.pitchTrim ?? fallback,
+    rollTrim: aircraft.controls?.rollTrim ?? fallback,
+    landingGear: aircraft.controls?.landingGear ?? fallback,
+  };
+}
+
 export interface AircraftDefinition {
   id: AircraftId;
   familyId: string;
@@ -154,7 +173,7 @@ export interface AircraftDefinition {
   rotors?: readonly { node: string; axis: readonly [number, number, number]; radiusMeters: number; blades: number; direction: number }[];
   gimbal?: { baseNode: string; yawNode?: string; rollNode?: string; pitchNode: string };
   /** Aircraft-specific input semantics and keyboard defaults; pilot overrides persist. */
-  controls?: {
+  controls?: Partial<ControlCapabilities> & {
     vertical?: "throttle" | "climb-rate";
     keyboard?: Partial<import("@0sfs/controls/keyboardAxisBindings").KeyboardAxisBindings>;
   };
@@ -165,6 +184,13 @@ export interface AircraftDefinition {
     chaseHeightMeters?: number;
     chaseZoomLimits?: { min: number; max: number };
     nearClipMeters?: number;
+  };
+  /** Default start for fresh flights; saved flights, links and pilot settings take precedence. */
+  start?: {
+    latDeg: number;
+    lonDeg: number;
+    heightAboveGroundMeters?: number;
+    headingDeg?: number;
   };
   label: string;
   summary: string;
