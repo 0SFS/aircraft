@@ -521,6 +521,8 @@ export function createAircraftModel(
       }
       cancelPending();
       clearShown();
+      // The procedural mesh places itself about the CG; the offset a loaded model took does not apply to it.
+      root.position.setAll(0);
       const dispose = droneMeshHook()?.mount(root) ?? (() => {});
       procedural = { key, dispose };
       options.onMeshRootsChange?.(root.getChildTransformNodes(true));
