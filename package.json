@@ -61,6 +61,7 @@
     }
   },
   "peerDependencies": {
+    "@0sfs/ground-contact": "0.1.0",
     "@foss-earth/ui": "0.1.0",
     "@0sfs/engines": "0.1.0",
     "@0sfs/exhaust": "0.1.0",
@@ -74,6 +75,7 @@
     "@0sfs/controls": "0.1.0"
   },
   "peerDependenciesMeta": {
+    "@0sfs/ground-contact": { "optional": true },
     "@foss-earth/ui": {
       "optional": true
     },

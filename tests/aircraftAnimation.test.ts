@@ -435,13 +435,80 @@ describe("rolling wheels", () => {
     t.scene.dispose(); t.engine.dispose();
   });
 
-  it("rolls at ground speed over radius, and not at all in the air", () => {
+  it("retains angular velocity and blur after liftoff, independent of airspeed", () => {
     const t = wheelRig(1.9);                      // 10 rad/s on a 0.19 m tyre
     applyAircraftRig(t.rig, t.state, 0.1);
     expect(Math.abs(t.rig.wheelAngleRad)).toBeCloseTo(1, 3);
     const rolled = t.rig.wheelAngleRad;
     applyAircraftRig(t.rig, { ...t.state, onGround: false }, 0.1);
-    expect(t.rig.wheelAngleRad).toBe(rolled);     // held, not driven
+    expect(t.rig.wheelAngleRad).toBeLessThan(rolled);
+    expect(t.rig.wheels[0].spin.omegaRadSec).toBeCloseTo(10 * Math.exp(-0.1 / 20), 3);
+    const before = t.rig.wheels[0].spin.omegaRadSec;
+    applyAircraftRig(t.rig, { ...t.state, onGround: false, groundSpeedMps: 200 }, 0.1);
+    expect(t.rig.wheels[0].spin.omegaRadSec).toBeLessThan(before);
+    t.scene.dispose(); t.engine.dispose();
+  });
+
+  it("keeps fast wheels blurred airborne and never spins an airborne start from airspeed", () => {
+    const t = wheelRig(40);
+    applyAircraftRig(t.rig, { ...t.state, onGround: false }, 0.1);
+    expect(t.rig.wheels.every(wheel => wheel.spin.omegaRadSec === 0)).toBe(true);
+    applyAircraftRig(t.rig, t.state, 0.1);
+    applyAircraftRig(t.rig, { ...t.state, onGround: false, groundSpeedMps: 0 }, 0.1);
+    expect(t.rig.wheelBlurred).toBe(true);
+    expect(t.rig.wheels.every(wheel => wheel.spin.omegaRadSec > 200)).toBe(true);
+    t.scene.dispose(); t.engine.dispose();
+  });
+
+  it("poses each wheel and its blur from physics without integrating again", () => {
+    const t = wheelRig(0);
+    const observed = [0.4, 0.8, 1.2].map(angleRad => ({
+      ...t.rig.wheels[0].spin, angleRad, omegaRadSec: 200,
+    }));
+    applyAircraftRig(t.rig, t.state, 0.1, { wheelSpinStates: observed });
+    for (const wheel of t.rig.wheels) {
+      expect(wheel.spin.angleRad).toBe(observed[wheel.gearIndex].angleRad);
+      const roll = wheel.rest.conjugate().multiply(wheel.node.rotationQuaternion!);
+      expect(2 * Math.atan2(roll.x, roll.w)).toBeCloseTo(-observed[wheel.gearIndex].angleRad, 6);
+    }
+    expect(t.rig.wheelBlurred).toBe(true);
+    const angles = t.rig.wheels.map(wheel => wheel.spin.angleRad);
+    applyAircraftRig(t.rig, t.state, 10, { simulationHeld: true, wheelSpinStates: observed.map(wheel => ({ ...wheel, angleRad: 2 })) });
+    expect(t.rig.wheels.map(wheel => wheel.spin.angleRad)).toEqual(angles);
+    t.scene.dispose(); t.engine.dispose();
+  });
+
+  it("reads B's JSBSim brake commands and stops airborne mains without braking the nose", () => {
+    const t = wheelRig(40);
+    applyAircraftRig(t.rig, t.state, 1 / 60);
+    const sdk = { getPropertyValue: (name: string) => ({
+      "fcs/left-brake-cmd-norm": 1, "fcs/right-brake-cmd-norm": 1,
+    })[name] ?? 0 } as unknown as JSBSimSdk;
+    const airborne = readControlSurfaceState(sdk);
+    expect(airborne.onGround).toBe(false);
+    for (let frame = 0; frame < 60; frame++) applyAircraftRig(t.rig, airborne, 1 / 60);
+    for (const wheel of t.rig.wheels) {
+      if (wheel.gearIndex !== 0) expect(wheel.spin.omegaRadSec).toBe(0);
+    }
+    const nose = t.rig.wheels.find(wheel => wheel.gearIndex === 0)!;
+    expect(nose.spin.omegaRadSec).toBeCloseTo(40 / nose.radius * Math.exp(-1 / 20), 6);
+    // Releasing the brakes in flight must not start the stopped mains again.
+    applyAircraftRig(t.rig, { ...airborne, leftBrakeNorm: 0, rightBrakeNorm: 0 }, 0.1);
+    expect(t.rig.wheels.filter(wheel => wheel.gearIndex !== 0).every(wheel => wheel.spin.omegaRadSec === 0)).toBe(true);
+    t.scene.dispose(); t.engine.dispose();
+  });
+
+  it("applies differential braking and coasts gradually without brakes", () => {
+    const t = wheelRig(40);
+    applyAircraftRig(t.rig, t.state, 1 / 60);
+    const airborne = { ...t.state, onGround: false, leftBrakeNorm: 1, rightBrakeNorm: 0 };
+    for (let frame = 0; frame < 60; frame++) applyAircraftRig(t.rig, airborne, 1 / 60);
+    const left = t.rig.wheels.find(wheel => wheel.gearIndex === 1)!;
+    const right = t.rig.wheels.find(wheel => wheel.gearIndex === 2)!;
+    expect(left.spin.omegaRadSec).toBe(0);
+    expect(right.spin.omegaRadSec).toBeCloseTo(40 / right.radius * Math.exp(-1 / 20), 6);
+    for (let frame = 0; frame < 1140; frame++) applyAircraftRig(t.rig, airborne, 1 / 60);
+    expect(right.spin.omegaRadSec).toBeCloseTo(40 / right.radius * Math.exp(-1), 6);
     t.scene.dispose(); t.engine.dispose();
   });
 

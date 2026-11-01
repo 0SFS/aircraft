@@ -1,3 +1,4 @@
+import { createWheelSpinState, stepWheelSpin, WHEEL_SPIN_CONFIGS, type WheelSpinState, type WheelSpinConfig, type WheelSpinInput } from "@0sfs/ground-contact/wheelSpin";
 import { createPropellerDisc, createPropellerSweep, DISC_HYSTERESIS, maxReadableRadPerSec, smoothFrameSeconds, stepRotatingProp } from "@0sfs/rotating-prop";
 export { maxReadableRadPerSec } from "@0sfs/rotating-prop";
 import {
@@ -50,6 +51,9 @@ export interface ControlSurfaceState {
   groundSpeedMps: number;
   /** True while any gear unit carries weight. */
   onGround: boolean;
+  /** Applied wheel brake commands; nose wheels have no brake in this model. */
+  leftBrakeNorm?: number;
+  rightBrakeNorm?: number;
   /** Physical STOVL conversion position; absent on aircraft without lift systems. */
   stovlPositionNorm?: number;
   /** Physical nozzle angles; pitch tips the exhaust down, positive thrust yaw tips it port. */
@@ -63,7 +67,7 @@ export const NEUTRAL_CONTROL_SURFACES: ControlSurfaceState = {
   aileronLeftRad: 0, aileronRightRad: 0, elevatorRad: 0,
   rudderRad: 0, ruddervatorLeftRad: 0, ruddervatorRightRad: 0,
   flapRad: 0, propellerRadPerSec: 0, gearDownNorm: 1,
-  groundSpeedMps: 0, onGround: false, stovlPositionNorm: 0,
+  groundSpeedMps: 0, onGround: false, leftBrakeNorm: 0, rightBrakeNorm: 0, stovlPositionNorm: 0,
 };
 
 const DEG_TO_RAD = Math.PI / 180;
@@ -99,6 +103,7 @@ const SURFACE_PROPERTIES = [
   "fcs/tef-pos-rad", "fcs/flap-pos-deg", ...RPM_PROPERTIES, "gear/gear-pos-norm",
   "gear/gear-cmd-norm", "velocities/vg-fps", ...WOW_PROPERTIES, "fcs/stovl-pos-norm",
   "fcs/nozzle-pitch-rad", "fcs/nozzle-yaw-rad",
+  "fcs/left-brake-cmd-norm", "fcs/right-brake-cmd-norm",
 ];
 const SURFACE_SLOTS = new Map(SURFACE_PROPERTIES.map((property, slot) => [property, slot]));
 
@@ -247,6 +252,8 @@ export function readControlSurfaceState(sdk: JSBSimSdk, aircraftId?: AircraftId,
     // Wheels roll at ground speed, not airspeed: a headwind does not spin them.
     groundSpeedMps: readNumber(read, "velocities/vg-fps") * FEET_TO_METERS,
     onGround: WOW_PROPERTIES.some((property) => readNumber(read, property) > 0),
+    leftBrakeNorm: readNumber(read, "fcs/left-brake-cmd-norm"),
+    rightBrakeNorm: readNumber(read, "fcs/right-brake-cmd-norm"),
     stovlPositionNorm: f35b ? Math.min(1, Math.max(0, readNumber(read, "fcs/stovl-pos-norm"))) : 0,
     ...(f35b ? {
       nozzlePitchRad: readOptionalNumber(read, "fcs/nozzle-pitch-rad"),
@@ -257,7 +264,7 @@ export function readControlSurfaceState(sdk: JSBSimSdk, aircraftId?: AircraftId,
 }
 
 type SurfaceKey = keyof Omit<ControlSurfaceState,
-  "propellerRadPerSec" | "gearDownNorm" | "groundSpeedMps" | "onGround" | "stovlPositionNorm" | "nozzlePitchRad" | "nozzleYawRad" | "nozzlePositionNorm">;
+  "propellerRadPerSec" | "gearDownNorm" | "groundSpeedMps" | "onGround" | "leftBrakeNorm" | "rightBrakeNorm" | "stovlPositionNorm" | "nozzlePitchRad" | "nozzleYawRad" | "nozzlePositionNorm">;
 
 interface HingedPart {
   node: TransformNode;
@@ -336,6 +343,10 @@ interface RollingWheel {
   node: TransformNode;
   rest: Quaternion;
   radius: number;
+  gearIndex: number;
+  spin: WheelSpinState;
+  spinConfig: WheelSpinConfig;
+  spinInput: WheelSpinInput;
 }
 
 interface Propeller {
@@ -353,7 +364,7 @@ interface Propeller {
 export interface AircraftRig {
   parts: HingedPart[];
   wheels: RollingWheel[];
-  /** Where the tyres are in their roll, radians. */
+  /** Representative local roll angle of the first wheel, radians; read-only. */
   wheelAngleRad: number;
   /**
    * The tyres' atlases: the band on one half, the band averaged over a turn on
@@ -665,7 +676,15 @@ export function bindAircraftRig(
     const scale = f35b ? Vector3.TransformNormal(SPAN_AXIS, node.computeWorldMatrix(true)).length() : 1;
     const radius = nodeRadius(node) * scale;
     if (radius <= 0) continue;
-    wheels.push({ node, rest: restRotation(node), radius });
+    const gearIndex = /nose/i.test(key) ? 0 : /left/i.test(key) ? 1 : 2;
+    // The baseline uses instant rolling on contact and the shared coast model
+    // airborne. These estimates are not aircraft-specific assembly data.
+    wheels.push({ node, rest: restRotation(node), radius, gearIndex,
+      spin: createWheelSpinState(),
+      spinConfig: { ...WHEEL_SPIN_CONFIGS[gearIndex], radiusMeters: radius },
+      spinInput: { onGround: false, rollMetersSec: 0, normalLoadNewtons: 0,
+        compressionMeters: 0, steeringRad: 0, brake: 0 },
+    });
     bound.push(key);
     // Only our procedural tyres use the two-half blur atlas. AF267's shared
     // texture also paints the airframe, so shifting it would move the livery.
@@ -911,34 +930,39 @@ function applyGear(rig: AircraftRig, position: number): void {
  * faster than the frame rate can show. `docs/drawing-fast-rotation.md` is the
  * argument; this is the wheel half of it, and the propeller below is the other.
  *
- * One decision for all of them: they are the same size to within a centimetre
- * and rolling on the same ground, and a nose tyre blurring a frame before the
- * mains would be a flicker nobody could explain. They also share one material,
- * so one decision is all the texture could carry anyway.
+ * The procedural tyres share one material, so their atlas needs one blur
+ * decision. Use the fastest physical wheel; each wheel retains its own angle.
  */
 function applyWheels(
   rig: AircraftRig,
   state: ControlSurfaceState,
   deltaSeconds: number,
   held: boolean,
+  observedWheels?: readonly WheelSpinState[],
 ): void {
   if (rig.wheels.length === 0) return;
-  // Airborne the tyres hold whatever angle they stopped at rather than being
-  // driven by an airspeed no wheel is touching.
-  const speed = state.onGround ? state.groundSpeedMps : 0;
   let fastest = 0;
   for (const wheel of rig.wheels) {
-    fastest = Math.max(fastest, Math.abs(speed) / wheel.radius);
+    const observed = observedWheels?.[wheel.gearIndex];
+    if (!held) {
+      if (observed) {
+        // Physics owns these angles; rendering must not integrate them again.
+        wheel.spin.angleRad = observed.angleRad;
+        wheel.spin.omegaRadSec = observed.omegaRadSec;
+      } else {
+        wheel.spinInput.onGround = state.onGround;
+        wheel.spinInput.rollMetersSec = state.groundSpeedMps;
+        wheel.spinInput.brake = wheel.gearIndex === 1 ? state.leftBrakeNorm ?? 0
+          : wheel.gearIndex === 2 ? state.rightBrakeNorm ?? 0 : 0;
+        stepWheelSpin(wheel.spin, wheel.spinConfig, wheel.spinInput, deltaSeconds, "instant");
+      }
+    }
+    fastest = Math.max(fastest, Math.abs(wheel.spin.omegaRadSec));
+    // Positive physical spin rolls forward, which is negative local X.
+    const angle = -wheel.spin.angleRad;
+    poseHinge(wheel.node, wheel.rest, SPAN_AXIS, angle, angle);
   }
-  if (!held && Number.isFinite(deltaSeconds) && deltaSeconds > 0) {
-    // Rolling forward carries the top of the tyre toward the nose, -Z. A
-    // positive rotation about +X carries +Y toward +Z, so the angle decreases.
-    rig.wheelAngleRad = (rig.wheelAngleRad - fastest * Math.sign(speed) * deltaSeconds)
-      % (2 * Math.PI);
-  }
-  for (const wheel of rig.wheels) {
-    poseHinge(wheel.node, wheel.rest, SPAN_AXIS, rig.wheelAngleRad, rig.wheelAngleRad);
-  }
+  rig.wheelAngleRad = -rig.wheels[0].spin.angleRad;
 
   const limit = maxReadableRadPerSec(TYRE_STRIPE_REPEATS, rig.frameSeconds);
   const blurred = rig.wheelBlurred
@@ -961,6 +985,8 @@ export interface ApplyRigOptions {
   simulationHeld?: boolean;
   /** Opt-in flat representation; false retains the three-dimensional swept volume. */
   propellerDiscs?: boolean;
+  /** Per-gear physics state (nose, left, right), when configured for this aircraft. */
+  wheelSpinStates?: readonly WheelSpinState[];
 }
 
 export function applyAircraftRig(
@@ -1017,7 +1043,7 @@ export function applyAircraftRig(
   // Missing telemetry leaves the authored/last observed pose; no display-time
   // actuator invents travel while physics is paused, resetting or unavailable.
   rig.engineNozzle?.update(state.nozzlePitchRad, state.nozzleYawRad, state.nozzlePositionNorm);
-  applyWheels(rig, state, deltaSeconds, held);
+  applyWheels(rig, state, deltaSeconds, held, options.wheelSpinStates);
 
   const propeller = rig.propeller;
   if (!propeller) return;
