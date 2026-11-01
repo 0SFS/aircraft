@@ -464,6 +464,8 @@ export function createAircraftModel(
           propellerBlades: definition.propellerBlades,
           aircraftId: definition.id,
           engineNozzle: definition.engineAssets?.rig,
+          modelRoot: root,
+          modelOffsetY: definition.modelOffset.y,
         });
         const prepared = options.prepareModel ? prepare(loaded, meshes, definition) : null;
         await whenReady(prepared ? meshes.concat(prepared.meshes) : meshes, controller.signal);

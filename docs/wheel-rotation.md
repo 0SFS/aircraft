@@ -37,6 +37,31 @@ replacing the corresponding existing JSBSim friction to avoid double counting.
 Use the existing bounded coupled-wheel solver and native contact contract rather
 than adding another collision pass or unconstrained integration loop.
 
+## F-35B suspension and contact alignment
+
+The F-35B lower suspension assemblies now follow actual native gear compression,
+independently of the C172 wheel-spin experiment. The shipped asset represents a
+loaded pose, so binding measures each tire's lowest vertex once in asset space,
+excluding the presentation root's placement. The difference from the native
+uncompressed contact is the extension calibration. Each update translates the
+complete `noseSuspension`, `leftSuspension` or `rightSuspension` lower assembly,
+including its wheel and lower strut, by that calibration plus physical
+compression. It does not lift the aircraft or scan vertices during a frame.
+
+Compression is zero for a gear without weight on wheels, even if stale native
+compression telemetry remains. The physical gear position blends the correction
+back to zero during retraction, preserving the authored fully stowed geometry.
+Missing native contact/CG data leaves the authored pose. Paused presentation can
+follow an explicit native reset, but does not integrate suspension travel.
+
+Native F-35B contact x/y stations now follow the extended axle/tread centres in
+the distributed mesh. Overall wheel bounding boxes are unsuitable lateral
+references because they include asymmetric hubs. Native uncompressed z and
+spring/damper coefficients are retained; this is a geometric fit to the asset,
+not a manufacturer landing-gear model. The current correction follows body-up;
+full strut kinematics and force-normal projection on arbitrary slopes remain
+approximations of the single-plane contact model.
+
 Aircraft-specific radii, assembly inertias and loss torques need calibration.
 The existing C172 inertias and brake torques are estimates; the 20-second coast
 time is an authored damping constant, not measured bearing or aerodynamic drag.

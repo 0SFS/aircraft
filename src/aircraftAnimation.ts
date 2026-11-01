@@ -4,10 +4,12 @@ export { maxReadableRadPerSec } from "@0sfs/rotating-prop";
 import {
   AbstractMesh,
   Mesh,
+  Matrix,
   Quaternion,
   Texture,
   TransformNode,
   Vector3,
+  VertexBuffer,
   type Scene,
 } from "@babylonjs/core";
 import type { JSBSimSdk, PropertyBatch } from "@felipegalind0/jsbsim";
@@ -54,6 +56,9 @@ export interface ControlSurfaceState {
   /** Applied wheel brake commands; nose wheels have no brake in this model. */
   leftBrakeNorm?: number;
   rightBrakeNorm?: number;
+  /** Native suspension telemetry, nose/left/right; absent when unavailable. */
+  wheelCompressionMeters?: readonly [number, number, number];
+  wheelContactUpMeters?: readonly [number, number, number];
   /** Physical STOVL conversion position; absent on aircraft without lift systems. */
   stovlPositionNorm?: number;
   /** Physical nozzle angles; pitch tips the exhaust down, positive thrust yaw tips it port. */
@@ -104,6 +109,8 @@ const SURFACE_PROPERTIES = [
   "gear/gear-cmd-norm", "velocities/vg-fps", ...WOW_PROPERTIES, "fcs/stovl-pos-norm",
   "fcs/nozzle-pitch-rad", "fcs/nozzle-yaw-rad",
   "fcs/left-brake-cmd-norm", "fcs/right-brake-cmd-norm",
+  "inertia/cg-z-in", "gear/unit[0]/z-position", "gear/unit[1]/z-position", "gear/unit[2]/z-position",
+  "gear/unit[0]/compression-ft", "gear/unit[1]/compression-ft", "gear/unit[2]/compression-ft",
 ];
 const SURFACE_SLOTS = new Map(SURFACE_PROPERTIES.map((property, slot) => [property, slot]));
 
@@ -229,6 +236,25 @@ export function resetPropellerRpmProperty(): void {
   resolvedRpmProperty = null;
 }
 
+/** Read actual suspension travel, independently of the C172 spin experiment. */
+function readWheelSuspension(read: PropertyRead): Pick<ControlSurfaceState, "wheelCompressionMeters" | "wheelContactUpMeters"> {
+  const cg = readOptionalNumber(read, "inertia/cg-z-in");
+  if (cg === undefined) return {};
+  const up = [0, 1, 2].map(index => {
+    const position = readOptionalNumber(read, `gear/unit[${index}]/z-position`);
+    return position === undefined ? NaN : (position - cg) * 0.0254;
+  }) as [number, number, number];
+  const compression = [0, 1, 2].map(index => {
+    const feet = readOptionalNumber(read, `gear/unit[${index}]/compression-ft`);
+    return feet === undefined ? NaN : readNumber(read, WOW_PROPERTIES[index]) > 0.5 ? feet * FEET_TO_METERS : 0;
+  }) as [number, number, number];
+  // Missing scalar SDK properties may answer zero. Do not animate a plausible
+  // suspension from an absent contact packet, including in legacy test doubles.
+  return up.every(value => Number.isFinite(value) && value < 0 && value > -10)
+    && compression.every(value => Number.isFinite(value) && value >= 0 && value < 2)
+    ? { wheelContactUpMeters: up, wheelCompressionMeters: compression } : {};
+}
+
 /** Observers resolved by the model owner with a noncreating native batch. */
 export type ControlSurfaceObservations = Pick<ControlSurfaceState, "nozzlePositionNorm">;
 
@@ -238,6 +264,7 @@ export function readControlSurfaceState(sdk: JSBSimSdk, aircraftId?: AircraftId,
   const aileronLeftRad = readNumber(read, "fcs/left-aileron-pos-rad");
   const f35b = aircraftId === "f-35b";
   const nozzlePositionNorm = observations.nozzlePositionNorm;
+  const suspension = f35b ? readWheelSuspension(read) : {};
   return {
     aileronLeftRad,
     // The trial F-35B FCS reports one differential aileron, not two properties.
@@ -259,12 +286,13 @@ export function readControlSurfaceState(sdk: JSBSimSdk, aircraftId?: AircraftId,
       nozzlePitchRad: readOptionalNumber(read, "fcs/nozzle-pitch-rad"),
       nozzleYawRad: readOptionalNumber(read, "fcs/nozzle-yaw-rad"),
     } : {}),
+    ...suspension,
     ...(Number.isFinite(nozzlePositionNorm) ? { nozzlePositionNorm } : {}),
   };
 }
 
 type SurfaceKey = keyof Omit<ControlSurfaceState,
-  "propellerRadPerSec" | "gearDownNorm" | "groundSpeedMps" | "onGround" | "leftBrakeNorm" | "rightBrakeNorm" | "stovlPositionNorm" | "nozzlePitchRad" | "nozzleYawRad" | "nozzlePositionNorm">;
+  "propellerRadPerSec" | "gearDownNorm" | "groundSpeedMps" | "onGround" | "leftBrakeNorm" | "rightBrakeNorm" | "wheelCompressionMeters" | "wheelContactUpMeters" | "stovlPositionNorm" | "nozzlePitchRad" | "nozzleYawRad" | "nozzlePositionNorm">;
 
 interface HingedPart {
   node: TransformNode;
@@ -349,6 +377,15 @@ interface RollingWheel {
   spinInput: WheelSpinInput;
 }
 
+interface WheelSuspension {
+  node: TransformNode;
+  restPosition: Vector3;
+  /** Parent-local displacement corresponding to one metre of body-up travel. */
+  localUp: Vector3;
+  restTreadBottomMeters: number;
+  gearIndex: number;
+}
+
 interface Propeller {
   node: TransformNode;
   rest: Quaternion;
@@ -364,6 +401,7 @@ interface Propeller {
 export interface AircraftRig {
   parts: HingedPart[];
   wheels: RollingWheel[];
+  suspension: WheelSuspension[];
   /** Representative local roll angle of the first wheel, radians; read-only. */
   wheelAngleRad: number;
   /**
@@ -401,6 +439,10 @@ export interface BindRigOptions {
   /** Another asset can supply aperture hinges without an airframe-specific animation branch. */
   nozzleAreaBindings?: readonly NozzleAreaBinding[];
   engineNozzle?: EngineNozzleRigDefinition;
+  /** Presentation root, excluded from asset-space measurements during binding. */
+  modelRoot?: TransformNode;
+  /** Vertical asset placement relative to the native CG. */
+  modelOffsetY?: number;
 }
 
 const DEFAULT_FRAME_SECONDS = 1 / 60;
@@ -692,6 +734,33 @@ export function bindAircraftRig(
   }
   for (const texture of tyreTextures) texture.uOffset = TYRE_SHARP_U;
 
+  const suspension: WheelSuspension[] = [];
+  if (f35b && options.modelOffsetY !== undefined) {
+    const modelWorld = options.modelRoot?.computeWorldMatrix(true).clone() ?? Matrix.Identity();
+    const worldToModel = Matrix.Invert(modelWorld);
+    const vertex = Vector3.Zero();
+    for (const wheel of wheels) {
+      const leg = wheel.node.parent;
+      if (!(leg instanceof TransformNode) || !/^(left|right|nose)Suspension$/.test(leg.name)
+        || !(leg.parent instanceof TransformNode) || !(wheel.node instanceof AbstractMesh)) continue;
+      const positions = wheel.node.getVerticesData(VertexBuffer.PositionKind);
+      if (!positions) continue;
+      const meshToModel = wheel.node.computeWorldMatrix(true).multiply(worldToModel);
+      let bottom = Infinity;
+      // Asset geometry is measured once. No per-frame vertex scans or terrain queries.
+      for (let at = 0; at < positions.length; at += 3) {
+        Vector3.FromArrayToRef(positions, at, vertex);
+        Vector3.TransformCoordinatesToRef(vertex, meshToModel, vertex);
+        bottom = Math.min(bottom, vertex.y + options.modelOffsetY);
+      }
+      if (!Number.isFinite(bottom)) continue;
+      const modelToParent = modelWorld.multiply(Matrix.Invert(leg.parent.computeWorldMatrix(true)));
+      const localUp = Vector3.TransformNormal(Vector3.UpReadOnly, modelToParent);
+      suspension.push({ node: leg, restPosition: leg.position.clone(), localUp,
+        restTreadBottomMeters: bottom, gearIndex: wheel.gearIndex });
+    }
+  }
+
   const gear: RetractingGear[] = [];
   for (const binding of f35b ? F35B_GEAR_BINDINGS : GEAR_BINDINGS) {
     const node = byName.get(binding.name);
@@ -754,6 +823,7 @@ export function bindAircraftRig(
   return {
     parts,
     wheels,
+    suspension,
     wheelAngleRad: 0,
     tyreTextures: [...tyreTextures],
     wheelBlurred: false,
@@ -925,6 +995,23 @@ function applyGear(rig: AircraftRig, position: number): void {
   }
 }
 
+/** Pose the complete lower leg from native compression, preserving authored stow. */
+function applyWheelSuspension(rig: AircraftRig, state: ControlSurfaceState): void {
+  const compression = state.wheelCompressionMeters, contactUp = state.wheelContactUpMeters;
+  if (!compression || !contactUp) return;
+  const gear = Number.isFinite(state.gearDownNorm) ? Math.max(0, Math.min(1, state.gearDownNorm)) : 0;
+  for (const leg of rig.suspension) {
+    const travel = compression[leg.gearIndex], uncompressed = contactUp[leg.gearIndex];
+    if (!Number.isFinite(travel) || !Number.isFinite(uncompressed)) continue;
+    // The imported loaded pose is only a geometric reference. Extend/retract
+    // its lower assembly until the tire tread reaches the native compressed
+    // patch. The same physical gear position blends back to authored stow.
+    const shift = (uncompressed + travel - leg.restTreadBottomMeters) * gear;
+    leg.node.position.set(leg.restPosition.x + leg.localUp.x * shift,
+      leg.restPosition.y + leg.localUp.y * shift, leg.restPosition.z + leg.localUp.z * shift);
+  }
+}
+
 /**
  * Roll the tyres, and move their texture to its blurred half once they turn
  * faster than the frame rate can show. `docs/drawing-fast-rotation.md` is the
@@ -1010,6 +1097,7 @@ export function applyAircraftRig(
   }
 
   applyGear(rig, state.gearDownNorm);
+  applyWheelSuspension(rig, state);
   const conversionPosition = state.stovlPositionNorm ?? 0;
   const conversion = Number.isFinite(conversionPosition)
     ? Math.min(1, Math.max(0, conversionPosition)) : 0;
