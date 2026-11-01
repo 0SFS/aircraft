@@ -14,6 +14,7 @@ import {
   resetPropellerRpmProperty,
   TYRE_BLURRED_U,
   TYRE_SHARP_U,
+  withGearDown,
 } from "../src/aircraftAnimation";
 
 const PART_NAMES = [
@@ -318,6 +319,31 @@ describe("retractable gear", () => {
       expect(`${leg} ${got.x.toFixed(3)} ${got.y.toFixed(3)} ${got.z.toFixed(3)}`)
         .toBe(`${leg} ${stowed[0].toFixed(3)} ${stowed[1].toFixed(3)} ${stowed[2].toFixed(3)}`);
     });
+    s.scene.dispose(); s.engine.dispose();
+  });
+
+  it("poses the gear down with unloaded struts for a reading, then puts the current pose back", () => {
+    const s = scene();
+    const { rig, wheels } = gearRig(s.scene);
+    const down = worldPositions(wheels);
+    // A strut on the left leg: 0.2 m of travel at 0.5 m contact height, over a 0.1 m tread.
+    const strut = new TransformNode("leftSuspension", s.scene);
+    strut.parent = wheels[1].parent;
+    strut.position.set(0.1, -0.3, 0.2);
+    rig.suspension.push({ node: strut, restPosition: strut.position.clone(), localUp: new Vector3(0, 2, 0),
+      restTreadBottomMeters: 0.1, gearIndex: 1 });
+    const moving = { ...NEUTRAL_CONTROL_SURFACES, gearDownNorm: 0.4,
+      wheelCompressionMeters: [0, 0.2, 0] as const, wheelContactUpMeters: [0, 0.5, 0] as const };
+    applyAircraftRig(rig, moving, 0);
+    const posed = worldPositions(wheels), strutAt = strut.position.clone();
+    let seen: Vector3[] = [], strutSeen = Vector3.Zero();
+    withGearDown(rig, moving, () => { seen = worldPositions(wheels); strutSeen = strut.position.clone(); });
+    seen.forEach((got, index) => expect(Vector3.Distance(got, down[index])).toBeLessThan(1e-6));
+    // Unloaded: (0.5 - 0.1) m up, two parent units a metre.
+    expect(strutSeen.asArray()).toEqual([0.1, -0.3 + 0.8, 0.2]);
+    worldPositions(wheels).forEach((got, index) => expect(Vector3.Distance(got, posed[index])).toBeLessThan(1e-6));
+    expect(strut.position.equals(strutAt)).toBe(true);
+    expect(Vector3.Distance(posed[0], down[0])).toBeGreaterThan(0.1);
     s.scene.dispose(); s.engine.dispose();
   });
 

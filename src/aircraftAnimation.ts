@@ -995,6 +995,24 @@ function applyGear(rig: AircraftRig, position: number): void {
   }
 }
 
+const UNLOADED: readonly [number, number, number] = [0, 0, 0];
+
+/**
+ * Calls `read` with the gear down and locked and its struts unloaded, then
+ * poses it from `state` again. Whatever rides on a leg, such as a wheel's
+ * contact patch, can be measured there while the gear is up or moving.
+ */
+export function withGearDown(rig: AircraftRig, state: ControlSurfaceState, read: () => void): void {
+  applyGear(rig, 1);
+  applyWheelSuspension(rig, { ...state, gearDownNorm: 1, wheelCompressionMeters: state.wheelCompressionMeters && UNLOADED });
+  try {
+    read();
+  } finally {
+    applyGear(rig, state.gearDownNorm);
+    applyWheelSuspension(rig, state);
+  }
+}
+
 /** Pose the complete lower leg from native compression, preserving authored stow. */
 function applyWheelSuspension(rig: AircraftRig, state: ControlSurfaceState): void {
   const compression = state.wheelCompressionMeters, contactUp = state.wheelContactUpMeters;
