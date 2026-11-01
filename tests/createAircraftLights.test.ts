@@ -112,23 +112,19 @@ describe("aircraft lights in the scene", () => {
     expect(h.groundLights).toHaveLength(calls);
   });
 
-  it("lights a gear leg's lamps only with the gear down, and keeps their beams on the ground's list, dark, with it up", () => {
+  it("lights a gear leg's lamps only with the gear down, and gives the ground no beams with it up", () => {
     const h = setup("f-35b");
-    const lit = () => h.groundLights.at(-1)!.map(light => Math.max(...light.intensityCd) > 0);
     h.frame();
-    expect(lit()).toEqual([true, true]);
-    // The ground recompiles when its number of lights changes; going dark is only their intensity.
+    expect(h.groundLights.at(-1)).toHaveLength(2);
     h.clock.gear = 0.4;
     h.frame();
-    expect(lit()).toEqual([false, false]);
+    expect(h.groundLights.at(-1)).toEqual([]);
+    const calls = h.groundLights.length;
+    h.frame();
+    expect(h.groundLights).toHaveLength(calls);
     h.clock.gear = 1;
     h.frame();
-    expect(lit()).toEqual([true, true]);
-    // The lamps switched off are gone from the list.
-    h.settings.landing = false;
-    h.lights.refresh();
-    h.frame();
-    expect(h.groundLights.at(-1)).toEqual([]);
+    expect(h.groundLights.at(-1)).toHaveLength(2);
   });
 
   it("asks for a frame at each flash's start and end while anti-collision lights are on, and for none otherwise", () => {

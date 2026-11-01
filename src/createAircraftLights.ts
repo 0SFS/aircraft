@@ -132,19 +132,17 @@ export function createAircraftLights(options: AircraftLightsOptions): AircraftLi
     };
   }));
 
-  // The beams on the ground, where they are this frame. A gear leg's beam
-  // stays on the list, dark, while the gear is up: the ground recompiles for
-  // every change in the number of its lights, which froze the flight each
-  // time the gear passed the lamps' position.
+  // The beams on the ground, where they are this frame.
   const beams = installations.filter((light): light is AircraftLightInstallation & { kind: "landing" | "taxi" } => light.kind === "landing" || light.kind === "taxi");
   let groundLightsShown = 0;
   const placeBeams = (): void => {
     const shown: SkyGroundLight[] = [];
-    if (settings.groundLight && settings.landing) {
+    if (settings.groundLight) {
       const matrix = options.parent.computeWorldMatrix(true);
       for (const light of beams) {
+        if (!lit(light)) continue;
         const colour = lightColour(light.kind);
-        const peak = lit(light) ? BEAMS[light.kind].peakCd * (light.share ?? 1) : 0;
+        const peak = BEAMS[light.kind].peakCd * (light.share ?? 1);
         const axis = light.direction ?? [0, 0, 1];
         shown.push({
           position: Vector3.TransformCoordinates(place(light), matrix),
