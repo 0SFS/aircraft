@@ -675,6 +675,15 @@ describe("reading JSBSim", () => {
     expect(readControlSurfaceState(sdk).gearDownNorm).toBe(1);
   });
 
+  it("prefers rotor rpm, so a governed rotor does not spin at the engine shaft speed", () => {
+    const sdk = {
+      getPropertyValue: (name: string) =>
+        name === "propulsion/engine[0]/rotor-rpm" ? 530
+          : name === "propulsion/engine[0]/engine-rpm" ? 2650 : NaN,
+    } as unknown as JSBSimSdk;
+    expect(readControlSurfaceState(sdk).propellerRadPerSec).toBeCloseTo((530 * 2 * Math.PI) / 60, 6);
+  });
+
   it("falls back through the alternative rpm property spellings", () => {
     const sdk = {
       getPropertyValue: (name: string) =>

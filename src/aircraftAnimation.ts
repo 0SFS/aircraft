@@ -88,6 +88,8 @@ const WOW_PROPERTIES = [
 // propulsion block is written, so try the usual spellings and keep the first
 // that answers with a number.
 const RPM_PROPERTIES = [
+  "propulsion/engine[0]/rotor-rpm",
+  "propulsion/engine/rotor-rpm",
   "propulsion/engine[0]/propeller-rpm",
   "propulsion/engine[0]/engine-rpm",
   "propulsion/engine/propeller-rpm",
