@@ -277,6 +277,14 @@ export function createAircraftModel(
     target.renderList = meshes;
     const saved = meshes.map(mesh => ({ visible: mesh.isVisible, always: mesh.alwaysSelectAsActiveMesh }));
     const previousPass = engine.currentRenderPassId;
+    // WebGPU bakes the front face into each pipeline and reverses it inside
+    // any render target, so this draw alone builds the canvas's mirror image
+    // and the first frame showing the gear still compiles. Reverse it back.
+    const setState = engine.setState;
+    const ownSetState = Object.prototype.hasOwnProperty.call(engine, "setState");
+    if (engine.isWebGPU) {
+      engine.setState = (culling, zOffset, force, reverseSide, ...rest) => setState.call(engine, culling, zOffset, force, !reverseSide, ...rest);
+    }
     try {
       for (const mesh of meshes) {
         mesh.isVisible = true;
@@ -285,6 +293,8 @@ export function createAircraftModel(
       target.render(false);
       return true;
     } finally {
+      if (ownSetState) engine.setState = setState;
+      else delete (engine as { setState?: unknown }).setState;
       meshes.forEach((mesh, index) => {
         mesh.isVisible = saved[index].visible;
         mesh.alwaysSelectAsActiveMesh = saved[index].always;
