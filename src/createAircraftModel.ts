@@ -75,8 +75,19 @@ export interface AircraftModelOptions {
    * text, and a mesh getting ready is hidden until it is.
    */
   requestRender?(): void;
+  /**
+   * Draw the parts that share one glTF mesh, such as the F135 nozzle's 16
+   * segments of each flap, as instances of it: one draw a pass for each
+   * shared mesh instead of one for each part. Off, each part is a mesh of its
+   * own, drawn as when every part had its own glTF mesh. On, the parts of a
+   * shared mesh draw together where its first part did, which changes which
+   * surface wins where two are at the same depth. Read when the model is
+   * created; each of its loads uses it.
+   */
+  instancedParts?: boolean;
   /** Overridable so tests can avoid a real network fetch. */
-  loadContainer?(url: string, scene: Scene, onProgress: (event: ISceneLoaderProgressEvent) => void): Promise<AssetContainer>;
+  loadContainer?(url: string, scene: Scene, onProgress: (event: ISceneLoaderProgressEvent) => void,
+    loading: AircraftContainerLoading): Promise<AssetContainer>;
   /** Overridable so tests need no compiled materials: resolves when the meshes can be drawn. */
   whenReady?(meshes: readonly AbstractMesh[], signal: AbortSignal): Promise<void>;
   /**
@@ -86,6 +97,12 @@ export interface AircraftModelOptions {
    * Throwing fails that load.
    */
   prepareModel?(model: AircraftModelPreparing): AircraftModelPreparation | null;
+}
+
+/** How one of the model's files is loaded. */
+export interface AircraftContainerLoading {
+  /** Babylon's glTF `createInstances`: parts that share a glTF mesh load as instances of it. */
+  createInstances: boolean;
 }
 
 /** A loaded model before it is shown. */
@@ -175,7 +192,9 @@ export function createAircraftModel(
   root.parent = parent;
 
   const loadContainer = options.loadContainer
-    ?? ((url, target, onProgress) => LoadAssetContainerAsync(url, target, { onProgress }));
+    ?? ((url, target, onProgress, { createInstances }) =>
+      LoadAssetContainerAsync(url, target, { onProgress, pluginOptions: { gltf: { createInstances } } }));
+  const loading: AircraftContainerLoading = { createInstances: options.instancedParts === true };
   const whenReady = options.whenReady ?? ((meshes, signal) => whenMeshesReady(meshes, { signal }));
   const getChaseDistance = options.getChaseDistanceMeters ?? (() => 0);
   const requestRender = (): void => options.requestRender?.();
@@ -402,7 +421,7 @@ export function createAircraftModel(
             publish({ download: { lodId, loaded: progress.reduce((sum, item) => sum + item.loaded, 0),
               total: progress.every(item => item.total !== null) ? progress.reduce((sum, item) => sum + item.total!, 0) : null,
               chosen } });
-          })));
+          }, loading)));
         const containers = results.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
         const failed = results.find(result => result.status === "rejected");
         if (failed) {

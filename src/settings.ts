@@ -72,6 +72,14 @@ export const AIRCRAFT_PARAMETERS_2 = [
     appliesLive: true,
     source: "aircraft/src/aircraftCatalog.ts",
   },
+  {
+    id: "osfs.aircraft.instancedParts",
+    label: "Instanced repeated parts",
+    description: "Draw parts that share one shape, such as the F-35B nozzle's 16 segments of each flap, together in one draw. The F-35B takes 120 fewer draws a pass. Where two surfaces are at the same depth, a different one can show: a few pixels on the nozzle's seams. Applies to the next aircraft loaded.",
+    unit: "none", kind: "boolean", default: false,
+    defaultReason: "Draw each part on its own, the same picture as before the parts shared shapes.",
+    home: all(MODEL), appliesLive: false, source: "aircraft/src/createAircraftModel.ts",
+  },
 ] as const satisfies readonly ParameterSpec[];
 
 export const AIRCRAFT_PARAMETERS_3 = [
