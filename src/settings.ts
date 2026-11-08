@@ -54,9 +54,9 @@ export const AIRCRAFT_PARAMETERS_2 = [
   {
     id: "osfs.aircraft.propellerDiscs",
     label: "Flat propeller discs",
-    description: "Use lower-cost flat discs at high RPM instead of the default semitransparent 3D swept propeller volumes. Slow propellers retain their individual 3D blades in either mode. This changes presentation only, never motor RPM or thrust.",
-    unit: "none", kind: "boolean", default: false,
-    defaultReason: "Preserve the three-dimensional swept blade shape at high RPM unless the pilot opts into flat discs.",
+    description: "Use lower-cost flat discs at high RPM instead of semitransparent 3D swept propeller volumes. Slow propellers retain their individual 3D blades in either mode. This changes presentation only, never motor RPM or thrust.",
+    unit: "none", kind: "boolean", default: true,
+    defaultReason: "Flat discs cost less than the swept volumes at high RPM. Tried on the flight on 8 November 2026 and kept for speed.",
     home: main(MODEL), appliesLive: true, source: "aircraft/src/aircraftAnimation.ts",
   },
   {
@@ -76,8 +76,8 @@ export const AIRCRAFT_PARAMETERS_2 = [
     id: "osfs.aircraft.instancedParts",
     label: "Instanced repeated parts",
     description: "Draw parts that share one shape, such as the F-35B nozzle's 16 segments of each flap, together in one draw. The F-35B takes 120 fewer draws a pass. Where two surfaces are at the same depth, a different one can show: a few pixels on the nozzle's seams. Applies to the next aircraft loaded.",
-    unit: "none", kind: "boolean", default: false,
-    defaultReason: "Draw each part on its own, the same picture as before the parts shared shapes.",
+    unit: "none", kind: "boolean", default: true,
+    defaultReason: "Fewer draws (the F-35B takes 120 fewer a pass), for the same picture apart from a few pixels at depth ties. Tried on the flight on 8 November 2026 and kept for speed.",
     home: all(MODEL), appliesLive: false, source: "aircraft/src/createAircraftModel.ts",
   },
 ] as const satisfies readonly ParameterSpec[];
